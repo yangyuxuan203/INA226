@@ -31,6 +31,7 @@
 #include "can.h"
 #include "lcd.h"
 #include "touch.h"
+#include "dac.h"
 #include <stdio.h>
 #include <string.h>
 /* USER CODE END Includes */
@@ -176,14 +177,18 @@ void StartTask02(void const * argument)
 }
 
 /**
-  * @brief  GY30 light sensor task (software I2C on PC1/PC2)
+  * @brief  GY30 light sensor task + DAC output (PA5)
   */
 void StartTask03(void const * argument)
 {
   float light;
 
   GY30_Init();
-  printf("GY30 initialized (PC1=SCL, PC2=SDA)\r\n");
+  printf("GY30 initialized (PC3=SCL, PC4=SDA)\r\n");
+
+  /* Start DAC channel 2 (PA5) */
+  HAL_DAC_Start(&hdac, DAC_CHANNEL_2);
+  printf("DAC CH2 started (PA5)\r\n");
 
   for(;;)
   {
@@ -195,6 +200,11 @@ void StartTask03(void const * argument)
       g_sensor.gy30_ok = 1;
       osMutexRelease(g_mutex);
       osSemaphoreRelease(g_data_ready);
+
+      /* Convert lux to 12-bit DAC value (0-4095), output on PA5 */
+      uint32_t dac_val = (uint32_t)light;
+      if (dac_val > 4095) dac_val = 4095;
+      HAL_DAC_SetValue(&hdac, DAC_CHANNEL_2, DAC_ALIGN_12B_R, dac_val);
     }
     else
     {
@@ -268,9 +278,11 @@ void StartTask04(void const * argument)
 void StartTask05(void const * argument)
 {
   SensorData_t local;
-  SensorData_t prev = {0};
+  SensorData_t prev;
   uint8_t touch_ok;
-  uint8_t first_run = 1;
+
+  /* Initialize prev to invalid values so first update always draws */
+  memset(&prev, 0xFF, sizeof(prev));
 
   /* Clear screen and draw static labels */
   lcd_clear(WHITE);
@@ -282,14 +294,15 @@ void StartTask05(void const * argument)
   lcd_show_string(10, 170, 200, 16, 16, "ADC Raw:", BLUE);
   lcd_show_string(10, 200, 200, 16, 16, "Voltage:", BLUE);
   lcd_show_string(10, 230, 200, 16, 16, "Light:", BLUE);
+  lcd_show_string(10, 260, 200, 16, 16, "DAC Out:", BLUE);
 
   /* Initialize touch screen */
   touch_ok = tp_init();
   if (touch_ok == 0) {
-      lcd_show_string(10, 280, 300, 16, 16, "Touch: OK", GREEN);
+      lcd_show_string(10, 300, 300, 16, 16, "Touch: OK", GREEN);
       printf("Touch screen initialized\r\n");
   } else {
-      lcd_show_string(10, 280, 300, 16, 16, "Touch: N/A", GRAY);
+      lcd_show_string(10, 300, 300, 16, 16, "Touch: N/A", GRAY);
       printf("Touch screen not found\r\n");
   }
 
@@ -300,9 +313,11 @@ void StartTask05(void const * argument)
     local = g_sensor;
     osMutexRelease(g_mutex);
 
-    /* Only update INA226 values when changed */
-    if (first_run || local.ina226_ok != prev.ina226_ok ||
-        local.bus_voltage != prev.bus_voltage || local.current != prev.current)
+    /* Update INA226 display values only when changed */
+    if (local.ina226_ok != prev.ina226_ok ||
+        local.bus_voltage != prev.bus_voltage ||
+        local.current != prev.current ||
+        local.power != prev.power)
     {
       if (local.ina226_ok)
       {
@@ -332,8 +347,8 @@ void StartTask05(void const * argument)
       }
     }
 
-    /* Only update MQ9 values when changed */
-    if (first_run || local.mq9_adc != prev.mq9_adc)
+    /* Update MQ9 display values only when changed */
+    if (local.mq9_adc != prev.mq9_adc || local.mq9_voltage != prev.mq9_voltage)
     {
       lcd_fill(120, 170, 280, 186, WHITE);
       lcd_show_num(120, 170, local.mq9_adc, 4, 16, RED);
@@ -348,8 +363,8 @@ void StartTask05(void const * argument)
       lcd_show_string(160, 200, 40, 16, 16, " V  ", RED);
     }
 
-    /* Only update GY30 values when changed */
-    if (first_run || local.gy30_ok != prev.gy30_ok || local.lux != prev.lux)
+    /* Update GY30 light display only when changed */
+    if (local.gy30_ok != prev.gy30_ok || local.lux != prev.lux)
     {
       lcd_fill(120, 230, 280, 246, WHITE);
       if (local.gy30_ok)
@@ -366,10 +381,30 @@ void StartTask05(void const * argument)
       {
         lcd_show_string(120, 230, 80, 16, 16, "N/A", GRAY);
       }
+
+      /* Update DAC output display (depends on lux) */
+      lcd_fill(120, 260, 280, 276, WHITE);
+      if (local.gy30_ok)
+      {
+        uint32_t dac_val = (uint32_t)local.lux;
+        if (dac_val > 4095) dac_val = 4095;
+        float dac_v = (float)dac_val / 4095.0f * 3.3f;
+        int dv_i = (int)dac_v;
+        int dv_f = (int)((dac_v - dv_i) * 100);
+        if (dv_f < 0) dv_f = -dv_f;
+        lcd_show_num(120, 260, dv_i, 1, 16, RED);
+        lcd_show_char(128, 260, '.', 16, 0, RED);
+        lcd_show_num(136, 260, dv_f, 2, 16, RED);
+        lcd_show_string(160, 260, 40, 16, 16, " V  ", RED);
+      }
+      else
+      {
+        lcd_show_string(120, 260, 80, 16, 16, "N/A", GRAY);
+      }
     }
 
+    /* Save current values for next comparison */
     prev = local;
-    first_run = 0;
 
     /* Handle touch input */
     if (touch_ok == 0)

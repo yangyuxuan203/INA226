@@ -23,6 +23,7 @@
 #include "cmsis_os.h"
 #include "adc.h"
 #include "can.h"
+#include "dac.h"
 #include "dma.h"
 #include "usart.h"
 #include "gpio.h"
@@ -72,7 +73,7 @@ void MX_FREERTOS_Init(void);
 /* USER CODE END 0 */
 
 /**
-  * @brief  应用程序入口
+  * @brief  The application entry point.
   * @retval int
   */
 int main(void)
@@ -82,29 +83,30 @@ int main(void)
 
   /* USER CODE END 1 */
 
-  /* MCU 配置--------------------------------------------------------*/
+  /* MCU Configuration--------------------------------------------------------*/
 
-  /* 复位所有外设, 初始化Flash接口和Systick */
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
 
   /* USER CODE END Init */
 
-  /* 配置系统时钟 */
+  /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
 
   /* USER CODE END SysInit */
 
-  /* 初始化所有已配置的外设 */
+  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_USART1_UART_Init();
   MX_ADC1_Init();
   MX_FSMC_Init();
   MX_CAN1_Init();
+  MX_DAC_Init();
   /* USER CODE BEGIN 2 */
   /* 串口直接测试 - 绕过printf验证硬件 */
   {
@@ -120,15 +122,15 @@ int main(void)
   printf("LCD init done\r\n");
   /* USER CODE END 2 */
 
-  /* 调用 freertos 对象初始化函数 (在 cmsis_os2.c 中) */
+  /* Call init function for freertos objects (in cmsis_os2.c) */
   MX_FREERTOS_Init();
 
-  /* 启动调度器 */
+  /* Start scheduler */
   osKernelStart();
 
-  /* 如果执行到这里说明调度器启动失败 */
+  /* We should never get here as control is now taken by the scheduler */
 
-  /* 无限循环 */
+  /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
@@ -140,7 +142,7 @@ int main(void)
 }
 
 /**
-  * @brief 系统时钟配置
+  * @brief System Clock Configuration
   * @retval None
   */
 void SystemClock_Config(void)
@@ -148,12 +150,13 @@ void SystemClock_Config(void)
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-  /** 配置主内部调压器输出电压
+  /** Configure the main internal regulator output voltage
   */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
-  /** 初始化RCC振荡器
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
@@ -169,7 +172,7 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
-  /** 初始化CPU、AHB和APB总线时钟
+  /** Initializes the CPU, AHB and APB buses clocks
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
@@ -189,7 +192,29 @@ void SystemClock_Config(void)
 /* USER CODE END 4 */
 
 /**
-  * @brief  错误处理函数
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM6 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM6)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
+
+/**
+  * @brief  This function is executed in case of error occurrence.
   * @retval None
   */
 void Error_Handler(void)
@@ -203,9 +228,10 @@ void Error_Handler(void)
 }
 #ifdef USE_FULL_ASSERT
 /**
-  * @brief  报告源文件名和源代码行号
-  * @param  file: 指向源文件名的指针
-  * @param  line: 错误发生的源代码行号
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
   * @retval None
   */
 void assert_failed(uint8_t *file, uint32_t line)
