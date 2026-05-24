@@ -158,19 +158,23 @@ void StartTask01(void const * argument)
   */
 void StartTask02(void const * argument)
 {
-  HAL_ADC_Start(&hadc1);
-
   for(;;)
   {
+    HAL_ADC_Start(&hadc1);
     if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK)
     {
       uint16_t raw = (uint16_t)HAL_ADC_GetValue(&hadc1);
+      HAL_ADC_Stop(&hadc1);
       float voltage = (float)raw / 4095.0f * 3.3f;
 
       osMutexWait(g_mutex, osWaitForever);
       g_sensor.mq9_adc = raw;
       g_sensor.mq9_voltage = voltage;
       osMutexRelease(g_mutex);
+    }
+    else
+    {
+      HAL_ADC_Stop(&hadc1);
     }
     osDelay(500);
   }
