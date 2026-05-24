@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ninja -j4)",
+      "Bash(where ninja *)",
+      "Read(//c/Users/**)",
+      "Read(//c/Program Files/CMake/bin/**)",
+      "Read(//c/Program Files \\(x86\\)/**)",
+      "Read(//c/Program Files/ninja/**)",
+      "Bash(find \"/c/Users/l/.vscode/extensions\" -name \"arm-none-eabi-gcc.exe\" 2>/dev/null | head -5; find \"/d/\" -name \"arm-none-eabi-gcc.exe\" -maxdepth 4 2>/dev/null | head -5; find \"/c/Program Files\" -name \"arm-none-eabi-gcc.exe\" -maxdepth 5 2>/dev/null | head -5)",
+      "Read(//d//**)",
+      "Read(//c/Program Files/**)",
+      "Bash(cube-cmake --version)",
+      "Bash(cube-cmake --preset Debug)",
+      "Bash(cube-cmake --build . --target INA226)",
+      "Bash(/c/Users/l/AppData/Local/stm32cube/bundles/gnu-tools-for-stm32/14.3.1+st.2/bin/arm-none-eabi-objcopy.exe -O binary e:/led/INA226/build/Debug/INA226.elf e:/led/INA226/build/Debug/INA226.bin)",
+      "Bash(\"/c/Users/l/.vscode/extensions/stmicroelectronics.stm32cube-ide-core-1.3.0-win32-x64/resources/binaries/win32/x86_64/cube.exe\" --help)",
+      "Bash(\"/c/Users/l/.vscode/extensions/stmicroelectronics.stm32cube-ide-core-1.3.0-win32-x64/resources/binaries/win32/x86_64/cube.exe\" programmer *)",
+      "Bash(cube-cmake --build build/Debug --target INA226)",
+      "Bash(/c/Users/l/AppData/Local/stm32cube/bundles/gnu-tools-for-stm32/14.3.1+st.2/bin/arm-none-eabi-objcopy.exe -O binary build/Debug/INA226.elf build/Debug/INA226.bin)",
+      "Bash(cube.exe programmer *)",
+      "Bash(xxd \"e:/led/INA226/LCD/touch.h\")",
+      "Bash('C:\\\\Users\\\\l\\\\AppData\\\\Local\\\\stm32cube\\\\bundles\\\\gnu-tools-for-stm32\\\\14.3.1+st.2\\\\bin\\\\arm-none-eabi-gcc.exe' -DDEBUG -DSTM32F407xx -DUSE_HAL_DRIVER -I../../../Core/Inc -I../../../Drivers/STM32F4xx_HAL_Driver/Inc -I../../../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy -I../../../Middlewares/Third_Party/FreeRTOS/Source/include -I../../../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS -I../../../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F -I../../../Drivers/CMSIS/Device/ST/STM32F4xx/Include -I../../../Drivers/CMSIS/Include -I../../../LCD -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard -Wall -fdata-sections -ffunction-sections -O0 -g3 -std=gnu11 -fsyntax-only ../../../LCD/touch.c)",
+      "Bash(C:/Users/l/AppData/Local/stm32cube/bundles/gnu-tools-for-stm32/14.3.1+st.2/bin/arm-none-eabi-gcc.exe -DDEBUG -DSTM32F407xx -DUSE_HAL_DRIVER -IE:/led/INA226/Core/Inc -IE:/led/INA226/Drivers/STM32F4xx_HAL_Driver/Inc -IE:/led/INA226/Drivers/STM32F4xx_HAL_Driver/Inc/Legacy -IE:/led/INA226/Middlewares/Third_Party/FreeRTOS/Source/include -IE:/led/INA226/Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS -IE:/led/INA226/Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F -IE:/led/INA226/Drivers/CMSIS/Device/ST/STM32F4xx/Include -IE:/led/INA226/Drivers/CMSIS/Include -IE:/led/INA226/LCD -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard -Wall -fdata-sections -ffunction-sections -O0 -g3 -std=gnu11 -fsyntax-only E:/led/INA226/Core/Src/freertos.c)",
+      "Bash(C:/Users/l/AppData/Local/stm32cube/bundles/gnu-tools-for-stm32/14.3.1+st.2/bin/arm-none-eabi-gcc.exe -DDEBUG -DSTM32F407xx -DUSE_HAL_DRIVER -IE:/led/INA226/Core/Inc -IE:/led/INA226/Drivers/STM32F4xx_HAL_Driver/Inc -IE:/led/INA226/Drivers/STM32F4xx_HAL_Driver/Inc/Legacy -IE:/led/INA226/Middlewares/Third_Party/FreeRTOS/Source/include -IE:/led/INA226/Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS -IE:/led/INA226/Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F -IE:/led/INA226/Drivers/CMSIS/Device/ST/STM32F4xx/Include -IE:/led/INA226/Drivers/CMSIS/Include -IE:/led/INA226/LCD -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard -Wall -fdata-sections -ffunction-sections -O0 -g3 -std=gnu11 -fsyntax-only E:/led/INA226/LCD/touch.c)"
+    ]
+  }
+}
