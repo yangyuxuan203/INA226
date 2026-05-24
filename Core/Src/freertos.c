@@ -268,7 +268,9 @@ void StartTask04(void const * argument)
 void StartTask05(void const * argument)
 {
   SensorData_t local;
+  SensorData_t prev = {0};
   uint8_t touch_ok;
+  uint8_t first_run = 1;
 
   /* Clear screen and draw static labels */
   lcd_clear(WHITE);
@@ -298,64 +300,76 @@ void StartTask05(void const * argument)
     local = g_sensor;
     osMutexRelease(g_mutex);
 
-    /* Update INA226 display values */
-    if (local.ina226_ok)
+    /* Only update INA226 values when changed */
+    if (first_run || local.ina226_ok != prev.ina226_ok ||
+        local.bus_voltage != prev.bus_voltage || local.current != prev.current)
     {
-      int v_i = (int)local.bus_voltage;
-      int v_f = (int)((local.bus_voltage - v_i) * 1000);
-      if (v_f < 0) v_f = -v_f;
-      lcd_fill(120, 40, 280, 56, WHITE);
-      lcd_show_string(120, 40, 160, 16, 16, "        ", WHITE);
-      lcd_show_num(120, 40, v_i, 1, 16, RED);
-      lcd_show_char(128, 40, '.', 16, 0, RED);
-      lcd_show_num(136, 40, v_f, 3, 16, RED);
-      lcd_show_string(170, 40, 40, 16, 16, " V  ", RED);
+      if (local.ina226_ok)
+      {
+        int v_i = (int)local.bus_voltage;
+        int v_f = (int)((local.bus_voltage - v_i) * 1000);
+        if (v_f < 0) v_f = -v_f;
+        lcd_fill(120, 40, 280, 56, WHITE);
+        lcd_show_num(120, 40, v_i, 1, 16, RED);
+        lcd_show_char(128, 40, '.', 16, 0, RED);
+        lcd_show_num(136, 40, v_f, 3, 16, RED);
+        lcd_show_string(170, 40, 40, 16, 16, " V  ", RED);
 
-      int ma = (int)(local.current * 1000.0f);
-      lcd_fill(120, 70, 280, 86, WHITE);
-      lcd_show_num(120, 70, ma, 5, 16, RED);
-      lcd_show_string(168, 70, 50, 16, 16, " mA  ", RED);
+        int ma = (int)(local.current * 1000.0f);
+        lcd_fill(120, 70, 280, 86, WHITE);
+        lcd_show_num(120, 70, ma, 5, 16, RED);
+        lcd_show_string(168, 70, 50, 16, 16, " mA  ", RED);
 
-      int mw = (int)(local.power * 1000.0f);
-      lcd_fill(120, 100, 280, 116, WHITE);
-      lcd_show_num(120, 100, mw, 6, 16, RED);
-      lcd_show_string(180, 100, 60, 16, 16, " mW  ", RED);
+        int mw = (int)(local.power * 1000.0f);
+        lcd_fill(120, 100, 280, 116, WHITE);
+        lcd_show_num(120, 100, mw, 6, 16, RED);
+        lcd_show_string(180, 100, 60, 16, 16, " mW  ", RED);
+      }
+      else
+      {
+        lcd_fill(120, 40, 280, 116, WHITE);
+        lcd_show_string(120, 40, 150, 16, 16, "ERR", RED);
+      }
     }
-    else
+
+    /* Only update MQ9 values when changed */
+    if (first_run || local.mq9_adc != prev.mq9_adc)
     {
-      lcd_fill(120, 40, 280, 116, WHITE);
-      lcd_show_string(120, 40, 150, 16, 16, "ERR", RED);
+      lcd_fill(120, 170, 280, 186, WHITE);
+      lcd_show_num(120, 170, local.mq9_adc, 4, 16, RED);
+
+      int mv_i = (int)local.mq9_voltage;
+      int mv_f = (int)((local.mq9_voltage - mv_i) * 100);
+      if (mv_f < 0) mv_f = -mv_f;
+      lcd_fill(120, 200, 280, 216, WHITE);
+      lcd_show_num(120, 200, mv_i, 1, 16, RED);
+      lcd_show_char(128, 200, '.', 16, 0, RED);
+      lcd_show_num(136, 200, mv_f, 2, 16, RED);
+      lcd_show_string(160, 200, 40, 16, 16, " V  ", RED);
     }
 
-    /* Update MQ9 display values */
-    lcd_fill(120, 170, 280, 186, WHITE);
-    lcd_show_num(120, 170, local.mq9_adc, 4, 16, RED);
-
-    int mv_i = (int)local.mq9_voltage;
-    int mv_f = (int)((local.mq9_voltage - mv_i) * 100);
-    if (mv_f < 0) mv_f = -mv_f;
-    lcd_fill(120, 200, 280, 216, WHITE);
-    lcd_show_num(120, 200, mv_i, 1, 16, RED);
-    lcd_show_char(128, 200, '.', 16, 0, RED);
-    lcd_show_num(136, 200, mv_f, 2, 16, RED);
-    lcd_show_string(160, 200, 40, 16, 16, " V  ", RED);
-
-    /* Update GY30 light display */
-    lcd_fill(120, 230, 280, 246, WHITE);
-    if (local.gy30_ok)
+    /* Only update GY30 values when changed */
+    if (first_run || local.gy30_ok != prev.gy30_ok || local.lux != prev.lux)
     {
-      int lx = (int)local.lux;
-      int lf = (int)((local.lux - lx) * 10);
-      if (lf < 0) lf = -lf;
-      lcd_show_num(120, 230, lx, 5, 16, RED);
-      lcd_show_char(160, 230, '.', 16, 0, RED);
-      lcd_show_num(168, 230, lf, 1, 16, RED);
-      lcd_show_string(178, 230, 60, 16, 16, " lux", RED);
+      lcd_fill(120, 230, 280, 246, WHITE);
+      if (local.gy30_ok)
+      {
+        int lx = (int)local.lux;
+        int lf = (int)((local.lux - lx) * 10);
+        if (lf < 0) lf = -lf;
+        lcd_show_num(120, 230, lx, 5, 16, RED);
+        lcd_show_char(160, 230, '.', 16, 0, RED);
+        lcd_show_num(168, 230, lf, 1, 16, RED);
+        lcd_show_string(178, 230, 60, 16, 16, " lux", RED);
+      }
+      else
+      {
+        lcd_show_string(120, 230, 80, 16, 16, "N/A", GRAY);
+      }
     }
-    else
-    {
-      lcd_show_string(120, 230, 80, 16, 16, "N/A", GRAY);
-    }
+
+    prev = local;
+    first_run = 0;
 
     /* Handle touch input */
     if (touch_ok == 0)

@@ -4,7 +4,7 @@
 #include "main.h"
 
 /* BH1750 (GY30) I2C Address */
-#define GY30_ADDR           0x23    /* ADDR pin = GND */
+#define GY30_ADDR           0X23    /* ADDR pin = floating/VCC (ADO悬空时默认高电平) */
 
 /* BH1750 Instruction Set */
 #define GY30_POWER_OFF      0x00
@@ -17,11 +17,11 @@
 #define GY30_ONE_H_RES2     0x21    /* One-Time H-Resolution Mode 2 */
 #define GY30_ONE_L_RES      0x23    /* One-Time L-Resolution Mode */
 
-/* Software I2C Pin Definitions (PC1=SCL, PC2=SDA) */
+/* Software I2C Pin Definitions (PC3=SCL, PC4=SDA) */
 #define GY30_SCL_PORT       GPIOC
-#define GY30_SCL_PIN        GPIO_PIN_1
+#define GY30_SCL_PIN        GPIO_PIN_3
 #define GY30_SDA_PORT       GPIOC
-#define GY30_SDA_PIN        GPIO_PIN_2
+#define GY30_SDA_PIN        GPIO_PIN_4
 
 /* IO Operations */
 #define GY30_SCL_HIGH()     HAL_GPIO_WritePin(GY30_SCL_PORT, GY30_SCL_PIN, GPIO_PIN_SET)
