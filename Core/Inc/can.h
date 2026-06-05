@@ -42,17 +42,6 @@ void MX_CAN1_Init(void);
 
 /* USER CODE BEGIN Prototypes */
 
-/* CAN receive message structure (shared between freertos.c and can.c) */
-typedef struct {
-    uint32_t id;
-    uint8_t data[8];
-    uint8_t len;
-} CAN_Msg_t;
-
-uint8_t CAN_Start(void);
-uint8_t CAN_Send(uint32_t id, uint8_t *data, uint8_t len);
-uint8_t CAN_ReceiveReady(void);
-uint8_t CAN_Receive(uint32_t *id, uint8_t *data, uint8_t *len);
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

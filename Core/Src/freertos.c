@@ -29,6 +29,7 @@
 #include "adc.h"
 #include "gy30.h"
 #include "can.h"
+#include "can_app.h"
 #include "lcd.h"
 #include "touch.h"
 #include "dac.h"
@@ -72,13 +73,17 @@ osMutexId g_mutex;
 osSemaphoreId g_data_ready;
 SensorData_t g_sensor = {0};
 
-/* CAN receive queue */
-QueueHandle_t g_can_rx_queue = NULL;
+/* STM32F1 received data via CAN */
+CAN_CtrlCmd_t g_f1_cmd = {0};
+volatile uint8_t g_f1_cmd_updated = 0;
 
 /* USER CODE END Variables */
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN Function Prototypes */
+
+/* Relay control function */
+void Relay_Control(float local_voltage, float can_voltage);
 
 /* USER CODE END Function Prototypes */
 
@@ -89,6 +94,42 @@ QueueHandle_t g_can_rx_queue = NULL;
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+
+/* Relay control defines */
+#define MOS1_PIN  GPIO_PIN_6  // PD6 - Solar/PV control
+#define MOS2_PIN  GPIO_PIN_7  // PD7 - Battery charging control
+#define MOS_PORT  GPIOD
+
+#define VOLTAGE_THRESHOLD_LOW   6.0f   // Low voltage threshold (V)
+#define VOLTAGE_THRESHOLD_HIGH  7.0f   // High voltage threshold (V)
+
+/**
+  * @brief  Relay control function
+  * @param  local_voltage: INA226 measured voltage
+  * @param  can_voltage: CAN received voltage from STM32F1
+  */
+void Relay_Control(float local_voltage, float can_voltage)
+{
+    /* MOS1 (PD6) control based on local voltage */
+    if (local_voltage < 6.0f)
+    {
+        HAL_GPIO_WritePin(GPIOD, GPIO_PIN_6, GPIO_PIN_SET);
+    }
+    else if (local_voltage > 7.0f)
+    {
+        HAL_GPIO_WritePin(GPIOD, GPIO_PIN_6, GPIO_PIN_RESET);
+    }
+
+    /* MOS2 (PD7) control based on CAN voltage */
+    if (can_voltage < 6.0f)
+    {
+        HAL_GPIO_WritePin(GPIOD, GPIO_PIN_7, GPIO_PIN_SET);
+    }
+    else if (can_voltage > 7.0f)
+    {
+        HAL_GPIO_WritePin(GPIOD, GPIO_PIN_7, GPIO_PIN_RESET);
+    }
+}
 
 /**
   * @brief  Default task: INA226 current/voltage sensor (software I2C on PB6/PB7)
@@ -223,53 +264,57 @@ void StartTask03(void const * argument)
 
 /**
 * @brief CAN communication task.
-*        Sends sensor data and receives commands every 1000ms.
+*        Receives battery data and commands from STM32F1.
+*        Controls relay based on voltage levels.
 * @param argument: Not used
 * @retval None
 */
 void StartTask04(void const * argument)
 {
-  SensorData_t local;
-  uint8_t tx_data[8];
-  CAN_Msg_t rx_msg;
+  CAN_CtrlCmd_t rx_cmd;
+  uint32_t debug_tick = 0;
+  SensorData_t local_data;
 
-  CAN_Start();
+  CAN_App_Init();
   printf("CAN1 ready (PA11=RX, PA12=TX)\r\n");
 
   for(;;)
   {
-    /* Read shared data */
+    /* Read local sensor data */
     osMutexWait(g_mutex, osWaitForever);
-    local = g_sensor;
+    local_data = g_sensor;
     osMutexRelease(g_mutex);
 
-    /* Send sensor data via CAN (ID=0x100) */
-    if (local.ina226_ok)
+    /* Check for received CAN command from STM32F1 */
+    if (xCanRxQueue && xQueueReceive(xCanRxQueue, &rx_cmd, 0) == pdTRUE)
     {
-      /* Pack bus voltage (mV) and current (mA) into 4 bytes */
-      uint16_t mv = (uint16_t)(local.bus_voltage * 1000);
-      uint16_t ma = (uint16_t)(local.current * 1000);
-      tx_data[0] = (mv >> 8) & 0xFF;
-      tx_data[1] = mv & 0xFF;
-      tx_data[2] = (ma >> 8) & 0xFF;
-      tx_data[3] = ma & 0xFF;
-      tx_data[4] = local.gy30_ok ? 1 : 0;
-      tx_data[5] = 0;
-      tx_data[6] = 0;
-      tx_data[7] = 0;
-      CAN_Send(0x100, tx_data, 8);
+      printf("CAN CMD: cmd=%d param=%d\r\n", rx_cmd.cmd, rx_cmd.param);
+
+      /* Update global F1 command data */
+      g_f1_cmd = rx_cmd;
+      g_f1_cmd_updated = 1;
     }
 
-    /* Check for received CAN data via queue (non-blocking poll) */
-    if (g_can_rx_queue && xQueueReceive(g_can_rx_queue, &rx_msg, 0) == pdTRUE)
+    /* Relay control logic */
+    if (local_data.ina226_ok)
     {
-      printf("CAN RX: ID=0x%03lX len=%d data=", (unsigned long)rx_msg.id, rx_msg.len);
-      for (int i = 0; i < rx_msg.len; i++)
-          printf("%02X ", rx_msg.data[i]);
-      printf("\r\n");
+      float can_voltage = g_f1_battery.voltage;
+      if (!g_f1_battery_updated)
+      {
+        can_voltage = 0.0f;
+      }
+      Relay_Control(local_data.bus_voltage, can_voltage);
     }
 
-    osDelay(1000);
+    /* Debug: print voltage values every 2 seconds */
+    if ((HAL_GetTick() - debug_tick) >= 2000)
+    {
+      debug_tick = HAL_GetTick();
+      printf("VOLTAGE: local=%.3fV CAN=%.3fV\r\n",
+             local_data.bus_voltage, g_f1_battery.voltage);
+    }
+
+    osDelay(100);
   }
 }
 
@@ -284,9 +329,11 @@ void StartTask05(void const * argument)
   SensorData_t local;
   SensorData_t prev;
   uint8_t touch_ok;
+  CAN_BatteryData_t prev_f1_battery;
 
   /* Initialize prev to invalid values so first update always draws */
   memset(&prev, 0xFF, sizeof(prev));
+  memset(&prev_f1_battery, 0, sizeof(prev_f1_battery));
 
   /* Clear screen and draw static labels */
   lcd_clear(WHITE);
@@ -299,6 +346,18 @@ void StartTask05(void const * argument)
   lcd_show_string(10, 200, 200, 16, 16, "Voltage:", BLUE);
   lcd_show_string(10, 230, 200, 16, 16, "Light:", BLUE);
   lcd_show_string(10, 260, 200, 16, 16, "DAC Out:", BLUE);
+
+  /* STM32F1 Battery Data section */
+  lcd_show_string(10, 330, 200, 24, 24, "STM32F1 Battery", RED);
+  lcd_show_string(10, 360, 200, 16, 16, "Voltage:", BLUE);
+  lcd_show_string(10, 390, 200, 16, 16, "Current:", BLUE);
+  lcd_show_string(10, 420, 200, 16, 16, "Temp:", BLUE);
+  lcd_show_string(10, 450, 200, 16, 16, "Status:", BLUE);
+
+  /* Relay Control section */
+  lcd_show_string(10, 480, 200, 24, 24, "Relay Control", RED);
+  lcd_show_string(10, 510, 200, 16, 16, "MOS1:", BLUE);
+  lcd_show_string(10, 540, 200, 16, 16, "MOS2:", BLUE);
 
   /* Initialize touch screen */
   touch_ok = tp_init();
@@ -407,6 +466,85 @@ void StartTask05(void const * argument)
       }
     }
 
+    /* Update STM32F1 battery data display - only when values change */
+    if (g_f1_battery_updated &&
+        (g_f1_battery.voltage != prev_f1_battery.voltage ||
+         g_f1_battery.current != prev_f1_battery.current ||
+         g_f1_battery.temperature != prev_f1_battery.temperature ||
+         g_f1_battery.status != prev_f1_battery.status))
+    {
+      /* Voltage */
+      lcd_fill(120, 360, 280, 376, WHITE);
+      int bv_i = (int)g_f1_battery.voltage;
+      int bv_f = (int)((g_f1_battery.voltage - bv_i) * 1000);
+      if (bv_f < 0) bv_f = -bv_f;
+      lcd_show_num(120, 360, bv_i, 1, 16, RED);
+      lcd_show_char(128, 360, '.', 16, 0, RED);
+      lcd_show_num(136, 360, bv_f, 3, 16, RED);
+      lcd_show_string(170, 360, 40, 16, 16, " V  ", RED);
+
+      /* Current */
+      lcd_fill(120, 390, 280, 406, WHITE);
+      int bc = (int)g_f1_battery.current;
+      lcd_show_num(120, 390, bc, 5, 16, RED);
+      lcd_show_string(168, 390, 50, 16, 16, " mA  ", RED);
+
+      /* Temperature */
+      lcd_fill(120, 420, 280, 436, WHITE);
+      int bt_i = (int)g_f1_battery.temperature;
+      int bt_f = (int)((g_f1_battery.temperature - bt_i) * 10);
+      if (bt_f < 0) bt_f = -bt_f;
+      lcd_show_num(120, 420, bt_i, 2, 16, RED);
+      lcd_show_char(136, 420, '.', 16, 0, RED);
+      lcd_show_num(144, 420, bt_f, 1, 16, RED);
+      lcd_show_string(155, 420, 30, 16, 16, " C  ", RED);
+
+      /* Status */
+      lcd_fill(120, 450, 280, 466, WHITE);
+      switch (g_f1_battery.status)
+      {
+        case BAT_STATUS_IDLE:      lcd_show_string(120, 450, 80, 16, 16, "IDLE    ", BLUE);   break;
+        case BAT_STATUS_CHARGING:  lcd_show_string(120, 450, 80, 16, 16, "CHARGE  ", GREEN);  break;
+        case BAT_STATUS_DISCHARGE: lcd_show_string(120, 450, 80, 16, 16, "DISCHRG ", YELLOW); break;
+        case BAT_STATUS_FAULT:     lcd_show_string(120, 450, 80, 16, 16, "FAULT   ", RED);    break;
+        case BAT_STATUS_TILTED:    lcd_show_string(120, 450, 80, 16, 16, "TILTED  ", RED);    break;
+        default:                   lcd_show_string(120, 450, 80, 16, 16, "UNKNOWN ", GRAY);   break;
+      }
+
+      /* Save current values for next comparison */
+      prev_f1_battery.voltage = g_f1_battery.voltage;
+      prev_f1_battery.current = g_f1_battery.current;
+      prev_f1_battery.temperature = g_f1_battery.temperature;
+      prev_f1_battery.status = g_f1_battery.status;
+      g_f1_battery_updated = 0;
+    }
+
+    /* Update MOS relay status display */
+    static uint8_t prev_mos1_state = 0xFF;
+    static uint8_t prev_mos2_state = 0xFF;
+    uint8_t mos1 = HAL_GPIO_ReadPin(MOS_PORT, MOS1_PIN) == GPIO_PIN_SET ? 1 : 0;
+    uint8_t mos2 = HAL_GPIO_ReadPin(MOS_PORT, MOS2_PIN) == GPIO_PIN_SET ? 1 : 0;
+
+    if (mos1 != prev_mos1_state || mos2 != prev_mos2_state)
+    {
+      /* MOS1 (PD2) - Solar/PV control */
+      lcd_fill(120, 510, 280, 526, WHITE);
+      if (mos1)
+        lcd_show_string(120, 510, 80, 16, 16, "ON ", GREEN);
+      else
+        lcd_show_string(120, 510, 80, 16, 16, "OFF", RED);
+
+      /* MOS2 (PD3) - Battery charging */
+      lcd_fill(120, 540, 280, 556, WHITE);
+      if (mos2)
+        lcd_show_string(120, 540, 80, 16, 16, "ON ", GREEN);
+      else
+        lcd_show_string(120, 540, 80, 16, 16, "OFF", RED);
+
+      prev_mos1_state = mos1;
+      prev_mos2_state = mos2;
+    }
+
     /* Save current values for next comparison */
     prev = local;
 
@@ -429,10 +567,6 @@ void StartTask05(void const * argument)
 /**
   * @brief  Return the CAN RX queue handle (used by can.c ISR callback)
   */
-QueueHandle_t CAN_GetRxQueueHandle(void)
-{
-  return g_can_rx_queue;
-}
 
 /**
   * @brief  FreeRTOS idle/timer task memory allocation (required by configSUPPORT_STATIC_ALLOCATION)
@@ -473,9 +607,6 @@ void MX_FREERTOS_Init(void)
   g_data_ready = osSemaphoreCreate(osSemaphore(g_data_ready), 1);
   osSemaphoreWait(g_data_ready, 0); /* consume initial token */
 
-  /* Create CAN receive queue */
-  g_can_rx_queue = xQueueCreate(4, sizeof(CAN_Msg_t));
-
   /* Define and create tasks */
   osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 256);
   osThreadCreate(osThread(defaultTask), NULL);
@@ -489,7 +620,7 @@ void MX_FREERTOS_Init(void)
   osThreadDef(adc_2, StartTask03, osPriorityBelowNormal, 0, 256);
   osThreadCreate(osThread(adc_2), NULL);
 
-  osThreadDef(adc_3, StartTask04, osPriorityBelowNormal, 0, 256);
+  osThreadDef(adc_3, StartTask04, osPriorityBelowNormal, 0, 512);
   osThreadCreate(osThread(adc_3), NULL);
 
   osThreadDef(lcd, StartTask05, osPriorityBelowNormal, 0, 512);

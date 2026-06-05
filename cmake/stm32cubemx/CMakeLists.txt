@@ -11,6 +11,7 @@ set(MX_Defines_Syms
 # STM32CubeMX generated include paths
 set(MX_Include_Dirs
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Inc
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../LCD
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/STM32F4xx_HAL_Driver/Inc
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Middlewares/Third_Party/FreeRTOS/Source/include
@@ -27,16 +28,27 @@ set(MX_Application_Src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/freertos.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/adc.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/can.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/can_app.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/dac.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/dma.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/fsmc.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/usart.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/ina226.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/gy30.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/delay.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/stm32f4xx_it.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/stm32f4xx_hal_msp.c
     #${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/stm32f4xx_hal_timebase_tim.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/sysmem.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/syscalls.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../startup_stm32f407xx.s
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../LCD/lcd.c
+    #${CMAKE_CURRENT_SOURCE_DIR}/../../LCD/lcd_ex.c  # 已被lcd.c包含，不要单独编译
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../LCD/touch.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../LCD/ctiic.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../LCD/ft5206.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../LCD/gt9xxx.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../LCD/24cxx_stub.c
 )
 
 # STM32 HAL/LL Drivers
