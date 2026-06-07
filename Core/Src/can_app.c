@@ -152,6 +152,15 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan_handle)
                     g_f1_battery_updated = 1;
                     break;
 
+                case CAN_ID_BAT_SOC:
+                {
+                    float f1_soc;
+                    memcpy(&f1_soc, g_rx_data, sizeof(float));
+                    g_f1_battery.soc_pct = (uint8_t)(f1_soc + 0.5f);
+                    g_f1_battery_updated = 1;
+                    break;
+                }
+
                 case CAN_ID_CTRL_CMD:
                 {
                     CAN_CtrlCmd_t cmd;

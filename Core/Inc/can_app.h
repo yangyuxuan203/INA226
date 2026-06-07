@@ -23,6 +23,7 @@ extern "C" {
 #define CAN_ID_BAT_CURRENT    0x101
 #define CAN_ID_BAT_TEMP       0x102
 #define CAN_ID_BAT_STATUS     0x103
+#define CAN_ID_BAT_SOC        0x104
 
 /* CAN Message ID (STM32F4 -> STM32F1) */
 #define CAN_ID_CTRL_CMD       0x200
@@ -43,6 +44,7 @@ typedef struct {
     float   current;
     float   temperature;
     BatteryStatus_t status;
+    uint8_t soc_pct;            /* SOC from STM32F1 via 0x104 */
 } CAN_BatteryData_t;
 
 /* CAN RX control command (to STM32F1) */

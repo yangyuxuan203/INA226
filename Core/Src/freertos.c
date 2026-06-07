@@ -26,6 +26,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "ina226.h"
+#include "ina226_pv.h"
+#include "ina226_3.h"
 #include "adc.h"
 #include "gy30.h"
 #include "can.h"
@@ -35,6 +37,7 @@
 #include "dac.h"
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -51,7 +54,20 @@ typedef struct {
     float lux;
     uint8_t ina226_ok;
     uint8_t gy30_ok;
+    float   soc_pct;        /* Battery SOC 0-100.0% */
+    float   pv_voltage;     /* PV bus voltage (V) */
+    float   pv_current;     /* PV current (A) */
+    float   pv_power;       /* PV power (W) */
+    uint8_t pv_ok;          /* PV INA226 status */
+    float   ina3_voltage;   /* INA226 #3 bus voltage (V) */
+    float   ina3_current;   /* INA226 #3 current (A) */
+    float   ina3_power;     /* INA226 #3 power (W) */
+    uint8_t ina3_ok;        /* INA226 #3 status */
 } SensorData_t;
+
+/* SOC calculation state (file scope) */
+static float soc_coulomb_mah = 2200.0f;  /* Start at 100%, corrected on first voltage reading */
+static uint8_t soc_initialized = 0;       /* 0 = not yet calibrated from voltage */
 
 /* USER CODE END PTD */
 
@@ -71,11 +87,15 @@ typedef struct {
 /* Shared data protected by mutex */
 osMutexId g_mutex;
 osSemaphoreId g_data_ready;
+osSemaphoreId g_lcd_update;  /* LCD refresh signal: released by each sensor task */
 SensorData_t g_sensor = {0};
 
 /* STM32F1 received data via CAN */
 CAN_CtrlCmd_t g_f1_cmd = {0};
 volatile uint8_t g_f1_cmd_updated = 0;
+
+/* DAC control flag: 1 = charging active (DAC follows light), 0 = all full (DAC = 0) */
+volatile uint8_t g_charging_active = 1;
 
 /* USER CODE END Variables */
 
@@ -83,7 +103,7 @@ volatile uint8_t g_f1_cmd_updated = 0;
 /* USER CODE BEGIN Function Prototypes */
 
 /* Relay control function */
-void Relay_Control(float local_voltage, float can_voltage);
+void Relay_Control(float pv_power, float home_soc, float car_soc, uint8_t sensor_ok);
 
 /* USER CODE END Function Prototypes */
 
@@ -101,60 +121,207 @@ void Relay_Control(float local_voltage, float can_voltage);
 #define MOS_PORT  GPIOD
 
 #define VOLTAGE_THRESHOLD_LOW   6.0f   // Low voltage threshold (V)
-#define VOLTAGE_THRESHOLD_HIGH  7.0f   // High voltage threshold (V)
+#define VOLTAGE_THRESHOLD_HIGH  8.4f   // High voltage threshold (V)
 
 /**
   * @brief  Relay control function
-  * @param  local_voltage: INA226 measured voltage
-  * @param  can_voltage: CAN received voltage from STM32F1
+  *         MOS1: PV → home battery (F4)
+  *         MOS2: home battery → car battery (F1)
+  *         When both full, DAC output = 0
+  * @param  pv_power: solar PV power (mW), from INA226
+  * @param  home_soc: home battery SOC (0-100), from INA226
+  * @param  car_soc: car battery SOC (0-100), from CAN
+  * @param  sensor_ok: INA226 sensor status (0=no data, safe default=ON)
   */
-void Relay_Control(float local_voltage, float can_voltage)
+void Relay_Control(float pv_power, float home_soc, float car_soc, uint8_t sensor_ok)
 {
-    /* MOS1 (PD6) control based on local voltage */
-    if (local_voltage < 6.0f)
+    if (!sensor_ok)
     {
-        HAL_GPIO_WritePin(GPIOD, GPIO_PIN_6, GPIO_PIN_SET);
-    }
-    else if (local_voltage > 7.0f)
-    {
+        /* No sensor data: default OFF */
         HAL_GPIO_WritePin(GPIOD, GPIO_PIN_6, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOD, GPIO_PIN_7, GPIO_PIN_RESET);
+        g_charging_active = 0;
+        return;
     }
 
-    /* MOS2 (PD7) control based on CAN voltage */
-    if (can_voltage < 6.0f)
+    /* MOS1: PV → home battery, when home < 90% */
+    if (home_soc < 90.0f)
     {
-        HAL_GPIO_WritePin(GPIOD, GPIO_PIN_7, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOD, GPIO_PIN_6, GPIO_PIN_SET);    /* MOS1 ON */
     }
-    else if (can_voltage > 7.0f)
+    else
     {
-        HAL_GPIO_WritePin(GPIOD, GPIO_PIN_7, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOD, GPIO_PIN_6, GPIO_PIN_RESET);  /* MOS1 OFF */
+    }
+
+    /* MOS2: home → car battery, when home > 80% and car < 90% */
+    if (home_soc > 80.0f && car_soc < 90.0f)
+    {
+        HAL_GPIO_WritePin(GPIOD, GPIO_PIN_7, GPIO_PIN_SET);    /* MOS2 ON */
+    }
+    else
+    {
+        HAL_GPIO_WritePin(GPIOD, GPIO_PIN_7, GPIO_PIN_RESET);  /* MOS2 OFF */
+    }
+
+    /* Both full → DAC = 0 */
+    if (home_soc >= 95.0f && car_soc >= 95.0f)
+    {
+        g_charging_active = 0;
+    }
+    else
+    {
+        g_charging_active = 1;
     }
 }
 
 /**
+  * @brief  Voltage-to-SOC lookup table for 2S LiPo (6.0V ~ 8.4V)
+  *         Piecewise linear interpolation between known breakpoints
+  */
+static uint8_t SOC_VoltageToPercent(float voltage)
+{
+    /* Voltage(mV) -> SOC(%) breakpoints */
+    static const uint16_t v_mv[] = { 6000, 6400, 6800, 7200, 7600, 8000, 8400 };
+    static const uint8_t  soc[]  = {    0,   10,   20,   40,   65,   85,  100 };
+    const int n = sizeof(v_mv) / sizeof(v_mv[0]);
+
+    int mv = (int)(voltage * 1000.0f);
+
+    if (mv <= v_mv[0])   return 0;
+    if (mv >= v_mv[n-1]) return 100;
+
+    for (int i = 0; i < n - 1; i++) {
+        if (mv >= v_mv[i] && mv <= v_mv[i+1]) {
+            /* Linear interpolation */
+            float ratio = (float)(mv - v_mv[i]) / (float)(v_mv[i+1] - v_mv[i]);
+            return (uint8_t)(soc[i] + ratio * (soc[i+1] - soc[i]));
+        }
+    }
+    return 0;
+}
+
+/**
   * @brief  Default task: INA226 current/voltage sensor (software I2C on PB6/PB7)
+  *         Also computes SOC via coulomb counting + voltage calibration
   */
 void StartDefaultTask(void const * argument)
 {
   INA226_Data ina_data;
+  uint32_t dbg_tick = 0;
+
+  /* Wait for power rail stable before I2C */
+  osDelay(500);
   INA226_Init();
   printf("INA226 initialized (PB6=SCL, PB7=SDA)\r\n");
+
+  uint8_t init_skip = 3;  /* skip first few readings for sensor stabilize */
 
   for(;;)
   {
     if (INA226_ReadData(&ina_data) == 0)
     {
+      /* Skip first few readings to let sensor stabilize */
+      if (init_skip > 0) {
+          init_skip--;
+          printf("INA226: skipping initial read V=%.3f\r\n", (double)ina_data.bus_voltage);
+          osDelay(200);
+          continue;
+      }
+
+      float current_mA = ina_data.current * 1000.0f;
+
+      /* --- SOC Calculation --- */
+      /* 0. Over-discharge / battery disconnected: V < 6.0V → force 0%, reset init */
+      if (ina_data.bus_voltage < 6.0f) {
+          soc_coulomb_mah = 0.0f;
+          soc_initialized = 0;  /* reset so we recalibrate when voltage recovers */
+
+          osMutexWait(g_mutex, osWaitForever);
+          g_sensor.bus_voltage = ina_data.bus_voltage;
+          g_sensor.shunt_voltage = ina_data.shunt_voltage;
+          g_sensor.current = ina_data.current;
+          g_sensor.power = ina_data.power;
+          g_sensor.soc_pct = 0.0f;
+          g_sensor.ina226_ok = 1;
+          osMutexRelease(g_mutex);
+          osSemaphoreRelease(g_data_ready);
+          osSemaphoreRelease(g_lcd_update);
+
+          if ((HAL_GetTick() - dbg_tick) >= 3000) {
+              dbg_tick = HAL_GetTick();
+              printf("SOC: V=%.3fV < 6.0V -> 0%%\r\n",
+                     (double)ina_data.bus_voltage);
+          }
+          osDelay(200);
+          continue;
+      }
+
+      /* 1. First reading: init coulomb counter directly from voltage */
+      if (!soc_initialized) {
+          uint8_t v_soc = SOC_VoltageToPercent(ina_data.bus_voltage);
+          soc_coulomb_mah = (float)v_soc / 100.0f * 2200.0f;
+          soc_initialized = 1;
+          printf("SOC init: V=%.3fV -> %d%% (%.1fmAh)\r\n",
+                 (double)ina_data.bus_voltage, v_soc, (double)soc_coulomb_mah);
+      }
+
+      /* 2. Coulomb counting: integrate current over 200ms interval */
+      /*    ΔmAh = current_mA × (200ms / 3600000ms) */
+      soc_coulomb_mah -= current_mA * (200.0f / 3600000.0f);
+      /*    Positive current = discharging, so subtract */
+
+      /* 3. Voltage calibration */
+      static float last_cal_voltage = 0.0f;
+      float voltage_soc_mah = (float)SOC_VoltageToPercent(ina_data.bus_voltage)
+                              / 100.0f * 2200.0f;
+
+      if (current_mA > -5.0f && current_mA < 5.0f) {
+          /* Idle: gentle correction */
+          soc_coulomb_mah = soc_coulomb_mah * 0.9f + voltage_soc_mah * 0.1f;
+      }
+      else if (last_cal_voltage > 0.0f &&
+               fabsf(ina_data.bus_voltage - last_cal_voltage) > 0.05f) {
+          /* Voltage changed > 0.3V: force recalibrate */
+          soc_coulomb_mah = voltage_soc_mah;
+          printf("SOC recal: V %.3f->%.3fV, SOC=%d%%\r\n",
+                 (double)last_cal_voltage, (double)ina_data.bus_voltage,
+                 SOC_VoltageToPercent(ina_data.bus_voltage));
+      }
+      last_cal_voltage = ina_data.bus_voltage;
+
+      /* 4. Clamp to 0~2200mAh */
+      if (soc_coulomb_mah < 0.0f)    soc_coulomb_mah = 0.0f;
+      if (soc_coulomb_mah > 2200.0f)  soc_coulomb_mah = 2200.0f;
+
+      /* 5. Convert to percentage */
+      float soc = soc_coulomb_mah / 2200.0f * 100.0f;
+      if (soc > 100.0f) soc = 100.0f;
+      if (soc < 0.0f)   soc = 0.0f;
+      /* --- End SOC Calculation --- */
+
+      /* Debug: print SOC detail every 3 seconds */
+      if ((HAL_GetTick() - dbg_tick) >= 3000) {
+          dbg_tick = HAL_GetTick();
+          printf("SOC: V=%.3fV I=%.3fmAh mah=%.1f soc=%.1f%%\r\n",
+                 (double)ina_data.bus_voltage, (double)current_mA,
+                 (double)soc_coulomb_mah, (double)soc);
+      }
+
       osMutexWait(g_mutex, osWaitForever);
       g_sensor.bus_voltage = ina_data.bus_voltage;
       g_sensor.shunt_voltage = ina_data.shunt_voltage;
       g_sensor.current = ina_data.current;
       g_sensor.power = ina_data.power;
+      g_sensor.soc_pct = soc;
       g_sensor.ina226_ok = 1;
       osMutexRelease(g_mutex);
       osSemaphoreRelease(g_data_ready);
+      osSemaphoreRelease(g_lcd_update);
     }
     else
     {
+      printf("INA226 read FAILED!\r\n");
       osMutexWait(g_mutex, osWaitForever);
       g_sensor.ina226_ok = 0;
       osMutexRelease(g_mutex);
@@ -180,10 +347,11 @@ void StartTask01(void const * argument)
 
     if (local.ina226_ok)
     {
-      printf("INA226: V=%.3fV I=%.3fmA P=%.3fmW\r\n",
+      printf("INA226: V=%.3fV I=%.3fmA P=%.3fmW SOC=%.1f%%\r\n",
              (double)local.bus_voltage,
              (double)(local.current * 1000.0f),
-             (double)(local.power * 1000.0f));
+             (double)(local.power * 1000.0f),
+             (double)local.soc_pct);
     }
     if (local.gy30_ok)
     {
@@ -245,11 +413,19 @@ void StartTask03(void const * argument)
       g_sensor.gy30_ok = 1;
       osMutexRelease(g_mutex);
       osSemaphoreRelease(g_data_ready);
+      osSemaphoreRelease(g_lcd_update);
 
-      /* Map lux 0-3000 to DAC 0-4095 (PA4) */
-      uint32_t dac_val = (uint32_t)(light * 4095.0f / 3000.0f);
-      if (dac_val > 4095) dac_val = 4095;
-      HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_val);
+      /* Map lux 0-3000 to DAC 0-4095 (PA4), or 0 if charging complete */
+      if (g_charging_active)
+      {
+        uint32_t dac_val = (uint32_t)(light * 4095.0f / 3000.0f);
+        if (dac_val > 4095) dac_val = 4095;
+        HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_val);
+      }
+      else
+      {
+        HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, 0);
+      }
     }
     else
     {
@@ -274,12 +450,53 @@ void StartTask04(void const * argument)
   CAN_CtrlCmd_t rx_cmd;
   uint32_t debug_tick = 0;
   SensorData_t local_data;
+  INA226_Data pv_data;
+  INA226_Data ina3_data;
 
+  INA226_PV_Init();
+  INA226_3_Init();
   CAN_App_Init();
   printf("CAN1 ready (PA11=RX, PA12=TX)\r\n");
 
   for(;;)
   {
+    /* Read PV INA226 (PB1/PB2) */
+    if (INA226_PV_ReadData(&pv_data) == 0)
+    {
+      osMutexWait(g_mutex, osWaitForever);
+      g_sensor.pv_voltage = pv_data.bus_voltage;
+      g_sensor.pv_current = pv_data.current;
+      g_sensor.pv_power = pv_data.power;
+      g_sensor.pv_ok = 1;
+      osMutexRelease(g_mutex);
+    }
+    else
+    {
+      osMutexWait(g_mutex, osWaitForever);
+      g_sensor.pv_ok = 0;
+      osMutexRelease(g_mutex);
+    }
+
+    /* Read INA226 #3 (PB12/PB13) */
+    if (INA226_3_ReadData(&ina3_data) == 0)
+    {
+      osMutexWait(g_mutex, osWaitForever);
+      g_sensor.ina3_voltage = ina3_data.bus_voltage;
+      g_sensor.ina3_current = ina3_data.current;
+      g_sensor.ina3_power = ina3_data.power;
+      g_sensor.ina3_ok = 1;
+      osMutexRelease(g_mutex);
+    }
+    else
+    {
+      osMutexWait(g_mutex, osWaitForever);
+      g_sensor.ina3_ok = 0;
+      osMutexRelease(g_mutex);
+    }
+
+    /* Signal LCD to update */
+    osSemaphoreRelease(g_lcd_update);
+
     /* Read local sensor data */
     osMutexWait(g_mutex, osWaitForever);
     local_data = g_sensor;
@@ -295,26 +512,30 @@ void StartTask04(void const * argument)
       g_f1_cmd_updated = 1;
     }
 
-    /* Relay control logic */
-    if (local_data.ina226_ok)
-    {
-      float can_voltage = g_f1_battery.voltage;
-      if (!g_f1_battery_updated)
-      {
-        can_voltage = 0.0f;
-      }
-      Relay_Control(local_data.bus_voltage, can_voltage);
-    }
+    /* Relay control logic (always call, sensor_ok=0 → default ON) */
+    Relay_Control(local_data.pv_power * 1000.0f, local_data.soc_pct,
+                  g_f1_battery.soc_pct, local_data.ina226_ok);
 
-    /* Debug: print voltage values every 2 seconds */
+    /* Debug: print all sensor status every 2 seconds */
     if ((HAL_GetTick() - debug_tick) >= 2000)
     {
       debug_tick = HAL_GetTick();
-      printf("VOLTAGE: local=%.3fV CAN=%.3fV\r\n",
-             local_data.bus_voltage, g_f1_battery.voltage);
+      printf("INA1: ok=%d V=%.3f I=%.3f P=%.3f SOC=%.1f%%\r\n",
+             local_data.ina226_ok, (double)local_data.bus_voltage,
+             (double)local_data.current, (double)local_data.power,
+             (double)local_data.soc_pct);
+      printf("PV:   ok=%d V=%.3f I=%.3f P=%.3f\r\n",
+             local_data.pv_ok, (double)local_data.pv_voltage,
+             (double)local_data.pv_current, (double)local_data.pv_power);
+      printf("INA3: ok=%d V=%.3f I=%.3f P=%.3f\r\n",
+             local_data.ina3_ok, (double)local_data.ina3_voltage,
+             (double)local_data.ina3_current, (double)local_data.ina3_power);
+      printf("GY30: ok=%d lux=%.1f F1_SOC=%d%% chg=%d\r\n",
+             local_data.gy30_ok, (double)local_data.lux,
+             g_f1_battery.soc_pct, g_charging_active);
     }
 
-    osDelay(100);
+    osDelay(200);
   }
 }
 
@@ -337,35 +558,48 @@ void StartTask05(void const * argument)
 
   /* Clear screen and draw static labels */
   lcd_clear(WHITE);
-  lcd_show_string(10, 10, 200, 24, 24, "INA226 Monitor", RED);
-  lcd_show_string(10, 40, 200, 16, 16, "Bus Voltage:", BLUE);
-  lcd_show_string(10, 70, 200, 16, 16, "Current:", BLUE);
-  lcd_show_string(10, 100, 200, 16, 16, "Power:", BLUE);
-  lcd_show_string(10, 140, 200, 24, 24, "MQ9 Sensor", RED);
-  lcd_show_string(10, 170, 200, 16, 16, "ADC Raw:", BLUE);
-  lcd_show_string(10, 200, 200, 16, 16, "Voltage:", BLUE);
-  lcd_show_string(10, 230, 200, 16, 16, "Light:", BLUE);
-  lcd_show_string(10, 260, 200, 16, 16, "DAC Out:", BLUE);
 
-  /* STM32F1 Battery Data section */
-  lcd_show_string(10, 330, 200, 24, 24, "STM32F1 Battery", RED);
-  lcd_show_string(10, 360, 200, 16, 16, "Voltage:", BLUE);
-  lcd_show_string(10, 390, 200, 16, 16, "Current:", BLUE);
-  lcd_show_string(10, 420, 200, 16, 16, "Temp:", BLUE);
-  lcd_show_string(10, 450, 200, 16, 16, "Status:", BLUE);
+  /* Section 1: Home Battery INA226 */
+  lcd_show_string(10, 10, 200, 16, 16, "Home Battery", RED);
+  lcd_show_string(10, 28, 100, 16, 16, "V:", BLUE);
+  lcd_show_string(10, 46, 100, 16, 16, "I:", BLUE);
+  lcd_show_string(10, 64, 100, 16, 16, "P:", BLUE);
+  lcd_show_string(10, 82, 100, 16, 16, "SOC:", BLUE);
 
-  /* Relay Control section */
-  lcd_show_string(10, 480, 200, 24, 24, "Relay Control", RED);
-  lcd_show_string(10, 510, 200, 16, 16, "MOS1:", BLUE);
-  lcd_show_string(10, 540, 200, 16, 16, "MOS2:", BLUE);
+  /* Section 2: PV INA226 */
+  lcd_show_string(10, 100, 200, 16, 16, "Solar PV", RED);
+  lcd_show_string(10, 118, 100, 16, 16, "V:", BLUE);
+  lcd_show_string(10, 136, 100, 16, 16, "I:", BLUE);
+  lcd_show_string(10, 154, 100, 16, 16, "P:", BLUE);
+
+  /* Section 3: INA226 #3 */
+  lcd_show_string(10, 172, 200, 16, 16, "Sensor #3", RED);
+  lcd_show_string(10, 190, 100, 16, 16, "V:", BLUE);
+  lcd_show_string(10, 208, 100, 16, 16, "I:", BLUE);
+  lcd_show_string(10, 226, 100, 16, 16, "P:", BLUE);
+
+  /* Section 4: MQ9 + GY30 */
+  lcd_show_string(10, 250, 200, 16, 16, "MQ9:", BLUE);
+  lcd_show_string(10, 268, 200, 16, 16, "Light:", BLUE);
+  lcd_show_string(10, 286, 200, 16, 16, "DAC:", BLUE);
+
+  /* Section 5: STM32F1 Battery */
+  lcd_show_string(10, 310, 200, 16, 16, "Car Battery (F1)", RED);
+  lcd_show_string(10, 328, 100, 16, 16, "V:", BLUE);
+  lcd_show_string(10, 346, 100, 16, 16, "I:", BLUE);
+  lcd_show_string(10, 364, 100, 16, 16, "T:", BLUE);
+  lcd_show_string(10, 382, 100, 16, 16, "S:", BLUE);
+  lcd_show_string(10, 400, 100, 16, 16, "SOC:", BLUE);
+
+  /* Section 6: Relay */
+  lcd_show_string(10, 424, 200, 16, 16, "MOS1(PV):", BLUE);
+  lcd_show_string(10, 442, 200, 16, 16, "MOS2(Car):", BLUE);
 
   /* Initialize touch screen */
   touch_ok = tp_init();
   if (touch_ok == 0) {
-      lcd_show_string(10, 300, 300, 16, 16, "Touch: OK", GREEN);
       printf("Touch screen initialized\r\n");
   } else {
-      lcd_show_string(10, 300, 300, 16, 16, "Touch: N/A", GRAY);
       printf("Touch screen not found\r\n");
   }
 
@@ -376,77 +610,148 @@ void StartTask05(void const * argument)
     local = g_sensor;
     osMutexRelease(g_mutex);
 
-    /* Update INA226 display values only when changed */
+    /* === Section 1: Home Battery (INA226 #1) === */
     if (local.ina226_ok != prev.ina226_ok ||
         local.bus_voltage != prev.bus_voltage ||
         local.current != prev.current ||
-        local.power != prev.power)
+        local.power != prev.power ||
+        local.soc_pct != prev.soc_pct)
     {
       if (local.ina226_ok)
       {
-        int v_i = (int)local.bus_voltage;
-        int v_f = (int)((local.bus_voltage - v_i) * 1000);
-        if (v_f < 0) v_f = -v_f;
-        lcd_fill(120, 40, 280, 56, WHITE);
-        lcd_show_num(120, 40, v_i, 1, 16, RED);
-        lcd_show_char(128, 40, '.', 16, 0, RED);
-        lcd_show_num(136, 40, v_f, 3, 16, RED);
-        lcd_show_string(170, 40, 40, 16, 16, " V  ", RED);
-
-        int ma = (int)(local.current * 1000.0f);
-        lcd_fill(120, 70, 280, 86, WHITE);
-        lcd_show_num(120, 70, ma, 5, 16, RED);
-        lcd_show_string(168, 70, 50, 16, 16, " mA  ", RED);
-
-        int mw = (int)(local.power * 1000.0f);
-        lcd_fill(120, 100, 280, 116, WHITE);
-        lcd_show_num(120, 100, mw, 6, 16, RED);
-        lcd_show_string(180, 100, 60, 16, 16, " mW  ", RED);
+        lcd_fill(30, 28, 240, 100, WHITE);
+        /* V */
+        int hv_i = (int)local.bus_voltage;
+        int hv_f = (int)((local.bus_voltage - hv_i) * 1000);
+        if (hv_f < 0) hv_f = -hv_f;
+        lcd_show_num(30, 28, hv_i, 1, 16, RED);
+        lcd_show_char(38, 28, '.', 16, 0, RED);
+        lcd_show_num(46, 28, hv_f, 3, 16, RED);
+        lcd_show_string(80, 28, 20, 16, 16, "V", RED);
+        /* I */
+        int hma = (int)(local.current * 1000.0f);
+        lcd_show_num(30, 46, hma, 5, 16, RED);
+        lcd_show_string(78, 46, 30, 16, 16, "mA", RED);
+        /* P */
+        int hpw = (int)(local.power * 1000.0f);
+        lcd_show_num(30, 64, hpw, 5, 16, RED);
+        lcd_show_string(78, 64, 30, 16, 16, "mW", RED);
+        /* SOC */
+        int hs_i = (int)local.soc_pct;
+        int hs_f = (int)((local.soc_pct - hs_i) * 10);
+        if (hs_f < 0) hs_f = -hs_f;
+        lcd_show_num(30, 82, hs_i, 3, 16, RED);
+        lcd_show_char(54, 82, '.', 16, 0, RED);
+        lcd_show_num(62, 82, hs_f, 1, 16, RED);
+        lcd_show_string(72, 82, 16, 16, 16, "%", RED);
       }
       else
       {
-        lcd_fill(120, 40, 280, 116, WHITE);
-        lcd_show_string(120, 40, 150, 16, 16, "ERR", RED);
+        lcd_fill(30, 28, 240, 100, WHITE);
+        lcd_show_string(30, 28, 40, 16, 16, "ERR", RED);
       }
     }
 
-    /* Update MQ9 display values only when changed */
+    /* === Section 2: PV (INA226 #2) === */
+    if (local.pv_ok != prev.pv_ok ||
+        local.pv_voltage != prev.pv_voltage ||
+        local.pv_current != prev.pv_current ||
+        local.pv_power != prev.pv_power)
+    {
+      lcd_fill(30, 118, 240, 172, WHITE);
+      if (local.pv_ok)
+      {
+        int pv_i = (int)local.pv_voltage;
+        int pv_f = (int)((local.pv_voltage - pv_i) * 1000);
+        if (pv_f < 0) pv_f = -pv_f;
+        lcd_show_num(30, 118, pv_i, 1, 16, RED);
+        lcd_show_char(38, 118, '.', 16, 0, RED);
+        lcd_show_num(46, 118, pv_f, 3, 16, RED);
+        lcd_show_string(80, 118, 20, 16, 16, "V", RED);
+
+        int pi_ma = (int)(local.pv_current * 1000.0f);
+        lcd_show_num(30, 136, pi_ma, 5, 16, RED);
+        lcd_show_string(78, 136, 30, 16, 16, "mA", RED);
+
+        int pp_mw = (int)(local.pv_power * 1000.0f);
+        lcd_show_num(30, 154, pp_mw, 5, 16, RED);
+        lcd_show_string(78, 154, 30, 16, 16, "mW", RED);
+      }
+      else
+      {
+        lcd_show_string(30, 118, 40, 16, 16, "N/A", GRAY);
+      }
+    }
+
+    /* === Section 3: INA226 #3 === */
+    if (local.ina3_ok != prev.ina3_ok ||
+        local.ina3_voltage != prev.ina3_voltage ||
+        local.ina3_current != prev.ina3_current ||
+        local.ina3_power != prev.ina3_power)
+    {
+      lcd_fill(30, 190, 240, 244, WHITE);
+      if (local.ina3_ok)
+      {
+        int n3_i = (int)local.ina3_voltage;
+        int n3_f = (int)((local.ina3_voltage - n3_i) * 1000);
+        if (n3_f < 0) n3_f = -n3_f;
+        lcd_show_num(30, 190, n3_i, 1, 16, RED);
+        lcd_show_char(38, 190, '.', 16, 0, RED);
+        lcd_show_num(46, 190, n3_f, 3, 16, RED);
+        lcd_show_string(80, 190, 20, 16, 16, "V", RED);
+
+        int n3ma = (int)(local.ina3_current * 1000.0f);
+        lcd_show_num(30, 208, n3ma, 5, 16, RED);
+        lcd_show_string(78, 208, 30, 16, 16, "mA", RED);
+
+        int n3pw = (int)(local.ina3_power * 1000.0f);
+        lcd_show_num(30, 226, n3pw, 5, 16, RED);
+        lcd_show_string(78, 226, 30, 16, 16, "mW", RED);
+      }
+      else
+      {
+        lcd_show_string(30, 190, 40, 16, 16, "N/A", GRAY);
+      }
+    }
+
+    /* === Section 4a: MQ9 === */
     if (local.mq9_adc != prev.mq9_adc || local.mq9_voltage != prev.mq9_voltage)
     {
-      lcd_fill(120, 170, 280, 186, WHITE);
-      lcd_show_num(120, 170, local.mq9_adc, 4, 16, RED);
-
+      lcd_fill(50, 250, 160, 266, WHITE);
+      lcd_show_num(50, 250, local.mq9_adc, 4, 16, RED);
       int mv_i = (int)local.mq9_voltage;
       int mv_f = (int)((local.mq9_voltage - mv_i) * 100);
       if (mv_f < 0) mv_f = -mv_f;
-      lcd_fill(120, 200, 280, 216, WHITE);
-      lcd_show_num(120, 200, mv_i, 1, 16, RED);
-      lcd_show_char(128, 200, '.', 16, 0, RED);
-      lcd_show_num(136, 200, mv_f, 2, 16, RED);
-      lcd_show_string(160, 200, 40, 16, 16, " V  ", RED);
+      lcd_show_num(100, 250, mv_i, 1, 16, RED);
+      lcd_show_char(108, 250, '.', 16, 0, RED);
+      lcd_show_num(116, 250, mv_f, 2, 16, RED);
+      lcd_show_string(136, 250, 20, 16, 16, "V", RED);
     }
 
-    /* Update GY30 light display only when changed */
+    /* === Section 4b: GY30 Light === */
     if (local.gy30_ok != prev.gy30_ok || local.lux != prev.lux)
     {
-      lcd_fill(120, 230, 280, 246, WHITE);
+      lcd_fill(50, 268, 140, 284, WHITE);
       if (local.gy30_ok)
       {
         int lx = (int)local.lux;
         int lf = (int)((local.lux - lx) * 10);
         if (lf < 0) lf = -lf;
-        lcd_show_num(120, 230, lx, 5, 16, RED);
-        lcd_show_char(160, 230, '.', 16, 0, RED);
-        lcd_show_num(168, 230, lf, 1, 16, RED);
-        lcd_show_string(178, 230, 60, 16, 16, " lux", RED);
+        lcd_show_num(50, 268, lx, 5, 16, RED);
+        lcd_show_char(90, 268, '.', 16, 0, RED);
+        lcd_show_num(98, 268, lf, 1, 16, RED);
+        lcd_show_string(108, 268, 30, 16, 16, "lux", RED);
       }
       else
       {
-        lcd_show_string(120, 230, 80, 16, 16, "N/A", GRAY);
+        lcd_show_string(50, 268, 40, 16, 16, "N/A", GRAY);
       }
+    }
 
-      /* Update DAC output display (depends on lux) */
-      lcd_fill(120, 260, 280, 276, WHITE);
+    /* === Section 4c: DAC === */
+    if (local.gy30_ok != prev.gy30_ok || local.lux != prev.lux)
+    {
+      lcd_fill(50, 286, 110, 302, WHITE);
       if (local.gy30_ok)
       {
         uint32_t dac_val = (uint32_t)(local.lux * 4095.0f / 3000.0f);
@@ -455,71 +760,69 @@ void StartTask05(void const * argument)
         int dv_i = (int)dac_v;
         int dv_f = (int)((dac_v - dv_i) * 100);
         if (dv_f < 0) dv_f = -dv_f;
-        lcd_show_num(120, 260, dv_i, 1, 16, RED);
-        lcd_show_char(128, 260, '.', 16, 0, RED);
-        lcd_show_xnum(136, 260, dv_f, 2, 16, 0x80, RED);
-        lcd_show_string(160, 260, 40, 16, 16, " V  ", RED);
+        lcd_show_num(50, 286, dv_i, 1, 16, RED);
+        lcd_show_char(58, 286, '.', 16, 0, RED);
+        lcd_show_xnum(66, 286, dv_f, 2, 16, 0x80, RED);
+        lcd_show_string(86, 286, 20, 16, 16, "V", RED);
       }
       else
       {
-        lcd_show_string(120, 260, 80, 16, 16, "N/A", GRAY);
+        lcd_show_string(50, 286, 40, 16, 16, "N/A", GRAY);
       }
     }
 
-    /* Update STM32F1 battery data display - only when values change */
+    /* === Section 5: Car Battery (F1) === */
     if (g_f1_battery_updated &&
         (g_f1_battery.voltage != prev_f1_battery.voltage ||
          g_f1_battery.current != prev_f1_battery.current ||
          g_f1_battery.temperature != prev_f1_battery.temperature ||
-         g_f1_battery.status != prev_f1_battery.status))
+         g_f1_battery.status != prev_f1_battery.status ||
+         g_f1_battery.soc_pct != prev_f1_battery.soc_pct))
     {
-      /* Voltage */
-      lcd_fill(120, 360, 280, 376, WHITE);
+      lcd_fill(30, 328, 240, 418, WHITE);
+      /* V */
       int bv_i = (int)g_f1_battery.voltage;
       int bv_f = (int)((g_f1_battery.voltage - bv_i) * 1000);
       if (bv_f < 0) bv_f = -bv_f;
-      lcd_show_num(120, 360, bv_i, 1, 16, RED);
-      lcd_show_char(128, 360, '.', 16, 0, RED);
-      lcd_show_num(136, 360, bv_f, 3, 16, RED);
-      lcd_show_string(170, 360, 40, 16, 16, " V  ", RED);
-
-      /* Current */
-      lcd_fill(120, 390, 280, 406, WHITE);
+      lcd_show_num(30, 328, bv_i, 1, 16, RED);
+      lcd_show_char(38, 328, '.', 16, 0, RED);
+      lcd_show_num(46, 328, bv_f, 3, 16, RED);
+      lcd_show_string(80, 328, 20, 16, 16, "V", RED);
+      /* I */
       int bc = (int)g_f1_battery.current;
-      lcd_show_num(120, 390, bc, 5, 16, RED);
-      lcd_show_string(168, 390, 50, 16, 16, " mA  ", RED);
-
-      /* Temperature */
-      lcd_fill(120, 420, 280, 436, WHITE);
+      lcd_show_num(30, 346, bc, 5, 16, RED);
+      lcd_show_string(78, 346, 30, 16, 16, "mA", RED);
+      /* T */
       int bt_i = (int)g_f1_battery.temperature;
       int bt_f = (int)((g_f1_battery.temperature - bt_i) * 10);
       if (bt_f < 0) bt_f = -bt_f;
-      lcd_show_num(120, 420, bt_i, 2, 16, RED);
-      lcd_show_char(136, 420, '.', 16, 0, RED);
-      lcd_show_num(144, 420, bt_f, 1, 16, RED);
-      lcd_show_string(155, 420, 30, 16, 16, " C  ", RED);
-
+      lcd_show_num(30, 364, bt_i, 2, 16, RED);
+      lcd_show_char(46, 364, '.', 16, 0, RED);
+      lcd_show_num(54, 364, bt_f, 1, 16, RED);
+      lcd_show_string(64, 364, 16, 16, 16, "C", RED);
       /* Status */
-      lcd_fill(120, 450, 280, 466, WHITE);
       switch (g_f1_battery.status)
       {
-        case BAT_STATUS_IDLE:      lcd_show_string(120, 450, 80, 16, 16, "IDLE    ", BLUE);   break;
-        case BAT_STATUS_CHARGING:  lcd_show_string(120, 450, 80, 16, 16, "CHARGE  ", GREEN);  break;
-        case BAT_STATUS_DISCHARGE: lcd_show_string(120, 450, 80, 16, 16, "DISCHRG ", YELLOW); break;
-        case BAT_STATUS_FAULT:     lcd_show_string(120, 450, 80, 16, 16, "FAULT   ", RED);    break;
-        case BAT_STATUS_TILTED:    lcd_show_string(120, 450, 80, 16, 16, "TILTED  ", RED);    break;
-        default:                   lcd_show_string(120, 450, 80, 16, 16, "UNKNOWN ", GRAY);   break;
+        case BAT_STATUS_IDLE:      lcd_show_string(30, 382, 60, 16, 16, "IDLE  ", BLUE);   break;
+        case BAT_STATUS_CHARGING:  lcd_show_string(30, 382, 60, 16, 16, "CHARGE", GREEN);  break;
+        case BAT_STATUS_DISCHARGE: lcd_show_string(30, 382, 60, 16, 16, "DISCHG", YELLOW); break;
+        case BAT_STATUS_FAULT:     lcd_show_string(30, 382, 60, 16, 16, "FAULT ", RED);    break;
+        case BAT_STATUS_TILTED:    lcd_show_string(30, 382, 60, 16, 16, "TILTED", RED);    break;
+        default:                   lcd_show_string(30, 382, 60, 16, 16, "UNKN  ", GRAY);   break;
       }
+      /* SOC */
+      lcd_show_num(30, 400, g_f1_battery.soc_pct, 3, 16, RED);
+      lcd_show_string(58, 400, 12, 16, 16, "%", RED);
 
-      /* Save current values for next comparison */
       prev_f1_battery.voltage = g_f1_battery.voltage;
       prev_f1_battery.current = g_f1_battery.current;
       prev_f1_battery.temperature = g_f1_battery.temperature;
       prev_f1_battery.status = g_f1_battery.status;
+      prev_f1_battery.soc_pct = g_f1_battery.soc_pct;
       g_f1_battery_updated = 0;
     }
 
-    /* Update MOS relay status display */
+    /* === Section 6: Relay === */
     static uint8_t prev_mos1_state = 0xFF;
     static uint8_t prev_mos2_state = 0xFF;
     uint8_t mos1 = HAL_GPIO_ReadPin(MOS_PORT, MOS1_PIN) == GPIO_PIN_SET ? 1 : 0;
@@ -527,19 +830,9 @@ void StartTask05(void const * argument)
 
     if (mos1 != prev_mos1_state || mos2 != prev_mos2_state)
     {
-      /* MOS1 (PD2) - Solar/PV control */
-      lcd_fill(120, 510, 280, 526, WHITE);
-      if (mos1)
-        lcd_show_string(120, 510, 80, 16, 16, "ON ", GREEN);
-      else
-        lcd_show_string(120, 510, 80, 16, 16, "OFF", RED);
-
-      /* MOS2 (PD3) - Battery charging */
-      lcd_fill(120, 540, 280, 556, WHITE);
-      if (mos2)
-        lcd_show_string(120, 540, 80, 16, 16, "ON ", GREEN);
-      else
-        lcd_show_string(120, 540, 80, 16, 16, "OFF", RED);
+      lcd_fill(100, 424, 200, 458, WHITE);
+      lcd_show_string(100, 424, 40, 16, 16, mos1 ? "ON " : "OFF", mos1 ? GREEN : RED);
+      lcd_show_string(100, 442, 40, 16, 16, mos2 ? "ON " : "OFF", mos2 ? GREEN : RED);
 
       prev_mos1_state = mos1;
       prev_mos2_state = mos2;
@@ -560,7 +853,8 @@ void StartTask05(void const * argument)
       }
     }
 
-    osDelay(300);
+    /* Wait for sensor data update, or timeout after 500ms (for touch) */
+    osSemaphoreWait(g_lcd_update, 500);
   }
 }
 
@@ -607,6 +901,11 @@ void MX_FREERTOS_Init(void)
   g_data_ready = osSemaphoreCreate(osSemaphore(g_data_ready), 1);
   osSemaphoreWait(g_data_ready, 0); /* consume initial token */
 
+  /* Create semaphore for LCD update signaling */
+  osSemaphoreDef(g_lcd_update);
+  g_lcd_update = osSemaphoreCreate(osSemaphore(g_lcd_update), 1);
+  osSemaphoreWait(g_lcd_update, 0); /* consume initial token */
+
   /* Define and create tasks */
   osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 256);
   osThreadCreate(osThread(defaultTask), NULL);
@@ -623,7 +922,7 @@ void MX_FREERTOS_Init(void)
   osThreadDef(adc_3, StartTask04, osPriorityBelowNormal, 0, 512);
   osThreadCreate(osThread(adc_3), NULL);
 
-  osThreadDef(lcd, StartTask05, osPriorityBelowNormal, 0, 512);
+  osThreadDef(lcd, StartTask05, osPriorityBelowNormal, 0, 768);
   osThreadCreate(osThread(lcd), NULL);
 }
 

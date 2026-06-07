@@ -195,10 +195,10 @@ void INA226_Init(void)
     delay_ms(10);
 
     /*
-     * Calibration Register:
-     * Current_LSB = 0.5mA (for a 0.1 ohm shunt resistor)
-     * Cal = 0.00512 / (Current_LSB * R_shunt)
-     * Cal = 0.00512 / (0.0005 * 0.1) = 102.4 -> 102 (0x0066)
+     * Calibration Register = 0x0066 (102):
+     * Actual R_shunt ≈ 7.15 ohm (not 0.1 ohm as typical)
+     * Current_LSB (hardcoded in read function) = 7.03uA
+     * Do NOT change Cal without recalibrating Current_LSB
      */
     INA226_WriteReg(INA226_REG_CALIBRATION, 0x0066);
     delay_ms(10);
@@ -233,15 +233,15 @@ float INA226_ReadBusVoltage(void)
 float INA226_ReadCurrent(void)
 {
     int16_t raw = INA226_ReadCurrentRaw();
-    /* Current_LSB = 0.5mA based on calibration value 102 */
-    return raw * 0.0005f;
+    /* Current_LSB = 7.03uA based on calibration value 7283 */
+    return raw * 0.00000703f;
 }
 
 float INA226_ReadPower(void)
 {
     uint16_t raw = INA226_ReadPowerRaw();
-    /* Power_LSB = 25 * Current_LSB = 25 * 0.5mA = 12.5mW */
-    return raw * 0.0125f;
+    /* Power_LSB = 25 * Current_LSB = 25 * 7.03uA = 0.17575mW */
+    return raw * 0.00017575f;
 }
 
 uint8_t INA226_ReadData(INA226_Data *data)
