@@ -210,6 +210,13 @@ void StartDefaultTask(void const * argument)
   INA226_Data ina_data;
   uint32_t dbg_tick = 0;
 
+  #define INA1_AVG_N 8
+  float ina1_v_buf[INA1_AVG_N] = {0};
+  float ina1_i_buf[INA1_AVG_N] = {0};
+  float ina1_p_buf[INA1_AVG_N] = {0};
+  uint8_t ina1_avg_idx = 0;
+  uint8_t ina1_avg_cnt = 0;
+
   /* Wait for power rail stable before I2C */
   osDelay(500);
   INA226_Init();
@@ -229,19 +236,35 @@ void StartDefaultTask(void const * argument)
           continue;
       }
 
-      float current_mA = ina_data.current * 1000.0f;
+      /* Moving average filter for INA226 #1 */
+      ina1_v_buf[ina1_avg_idx] = ina_data.bus_voltage;
+      ina1_i_buf[ina1_avg_idx] = ina_data.current;
+      ina1_p_buf[ina1_avg_idx] = ina_data.power;
+      ina1_avg_idx = (ina1_avg_idx + 1) % INA1_AVG_N;
+      if (ina1_avg_cnt < INA1_AVG_N) ina1_avg_cnt++;
+
+      float avg_v = 0, avg_i = 0, avg_p = 0;
+      for (int j = 0; j < ina1_avg_cnt; j++) {
+          avg_v += ina1_v_buf[j];
+          avg_i += ina1_i_buf[j];
+          avg_p += ina1_p_buf[j];
+      }
+      avg_v /= ina1_avg_cnt;
+      avg_i /= ina1_avg_cnt;
+      avg_p /= ina1_avg_cnt;
+
+      float current_mA = avg_i * 1000.0f;
 
       /* --- SOC Calculation --- */
       /* 0. Over-discharge / battery disconnected: V < 6.0V → force 0%, reset init */
-      if (ina_data.bus_voltage < 6.0f) {
+      if (avg_v < 6.0f) {
           soc_coulomb_mah = 0.0f;
-          soc_initialized = 0;  /* reset so we recalibrate when voltage recovers */
+          soc_initialized = 0;
 
           osMutexWait(g_mutex, osWaitForever);
-          g_sensor.bus_voltage = ina_data.bus_voltage;
-          g_sensor.shunt_voltage = ina_data.shunt_voltage;
-          g_sensor.current = ina_data.current;
-          g_sensor.power = ina_data.power;
+          g_sensor.bus_voltage = avg_v;
+          g_sensor.current = avg_i;
+          g_sensor.power = avg_p;
           g_sensor.soc_pct = 0.0f;
           g_sensor.ina226_ok = 1;
           osMutexRelease(g_mutex);
@@ -250,8 +273,7 @@ void StartDefaultTask(void const * argument)
 
           if ((HAL_GetTick() - dbg_tick) >= 3000) {
               dbg_tick = HAL_GetTick();
-              printf("SOC: V=%.3fV < 6.0V -> 0%%\r\n",
-                     (double)ina_data.bus_voltage);
+              printf("SOC: V=%.3fV < 6.0V -> 0%%\r\n", (double)avg_v);
           }
           osDelay(200);
           continue;
@@ -259,36 +281,32 @@ void StartDefaultTask(void const * argument)
 
       /* 1. First reading: init coulomb counter directly from voltage */
       if (!soc_initialized) {
-          uint8_t v_soc = SOC_VoltageToPercent(ina_data.bus_voltage);
+          uint8_t v_soc = SOC_VoltageToPercent(avg_v);
           soc_coulomb_mah = (float)v_soc / 100.0f * 2200.0f;
           soc_initialized = 1;
           printf("SOC init: V=%.3fV -> %d%% (%.1fmAh)\r\n",
-                 (double)ina_data.bus_voltage, v_soc, (double)soc_coulomb_mah);
+                 (double)avg_v, v_soc, (double)soc_coulomb_mah);
       }
 
       /* 2. Coulomb counting: integrate current over 200ms interval */
-      /*    ΔmAh = current_mA × (200ms / 3600000ms) */
       soc_coulomb_mah -= current_mA * (200.0f / 3600000.0f);
-      /*    Positive current = discharging, so subtract */
 
       /* 3. Voltage calibration */
       static float last_cal_voltage = 0.0f;
-      float voltage_soc_mah = (float)SOC_VoltageToPercent(ina_data.bus_voltage)
+      float voltage_soc_mah = (float)SOC_VoltageToPercent(avg_v)
                               / 100.0f * 2200.0f;
 
       if (current_mA > -5.0f && current_mA < 5.0f) {
-          /* Idle: gentle correction */
           soc_coulomb_mah = soc_coulomb_mah * 0.9f + voltage_soc_mah * 0.1f;
       }
       else if (last_cal_voltage > 0.0f &&
-               fabsf(ina_data.bus_voltage - last_cal_voltage) > 0.05f) {
-          /* Voltage changed > 0.3V: force recalibrate */
+               fabsf(avg_v - last_cal_voltage) > 0.05f) {
           soc_coulomb_mah = voltage_soc_mah;
           printf("SOC recal: V %.3f->%.3fV, SOC=%d%%\r\n",
-                 (double)last_cal_voltage, (double)ina_data.bus_voltage,
-                 SOC_VoltageToPercent(ina_data.bus_voltage));
+                 (double)last_cal_voltage, (double)avg_v,
+                 SOC_VoltageToPercent(avg_v));
       }
-      last_cal_voltage = ina_data.bus_voltage;
+      last_cal_voltage = avg_v;
 
       /* 4. Clamp to 0~2200mAh */
       if (soc_coulomb_mah < 0.0f)    soc_coulomb_mah = 0.0f;
@@ -304,15 +322,14 @@ void StartDefaultTask(void const * argument)
       if ((HAL_GetTick() - dbg_tick) >= 3000) {
           dbg_tick = HAL_GetTick();
           printf("SOC: V=%.3fV I=%.3fmAh mah=%.1f soc=%.1f%%\r\n",
-                 (double)ina_data.bus_voltage, (double)current_mA,
+                 (double)avg_v, (double)current_mA,
                  (double)soc_coulomb_mah, (double)soc);
       }
 
       osMutexWait(g_mutex, osWaitForever);
-      g_sensor.bus_voltage = ina_data.bus_voltage;
-      g_sensor.shunt_voltage = ina_data.shunt_voltage;
-      g_sensor.current = ina_data.current;
-      g_sensor.power = ina_data.power;
+      g_sensor.bus_voltage = avg_v;
+      g_sensor.current = avg_i;
+      g_sensor.power = avg_p;
       g_sensor.soc_pct = soc;
       g_sensor.ina226_ok = 1;
       osMutexRelease(g_mutex);
@@ -409,6 +426,7 @@ void StartTask03(void const * argument)
     {
       printf("GY30: %.1f lux\r\n", (double)light);
       osMutexWait(g_mutex, osWaitForever);
+      if (light > 2500.0f) light = 2500.0f;
       g_sensor.lux = light;
       g_sensor.gy30_ok = 1;
       osMutexRelease(g_mutex);
@@ -418,7 +436,7 @@ void StartTask03(void const * argument)
       /* Map lux 0-3000 to DAC 0-4095 (PA4), or 0 if charging complete */
       if (g_charging_active)
       {
-        uint32_t dac_val = (uint32_t)(light * 4095.0f / 3000.0f);
+        uint32_t dac_val = (uint32_t)(light * 4095.0f / 2500.0f);
         if (dac_val > 4095) dac_val = 4095;
         HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_val);
       }
@@ -453,6 +471,24 @@ void StartTask04(void const * argument)
   INA226_Data pv_data;
   INA226_Data ina3_data;
 
+  #define PV_AVG_N 8
+
+  /* INA3 moving average filter (8 samples) */
+  float ina3_v_buf[PV_AVG_N] = {0};
+  float ina3_i_buf[PV_AVG_N] = {0};
+  float ina3_p_buf[PV_AVG_N] = {0};
+  uint8_t ina3_avg_idx = 0;
+  uint8_t ina3_avg_cnt = 0;
+  uint8_t ina3_read_div = 0;
+
+  /* PV moving average filter (8 samples) */
+  float pv_v_buf[PV_AVG_N] = {0};
+  float pv_i_buf[PV_AVG_N] = {0};
+  float pv_p_buf[PV_AVG_N] = {0};
+  uint8_t pv_avg_idx = 0;
+  uint8_t pv_avg_cnt = 0;
+  uint8_t pv_read_div = 0;  /* divider to slow PV read rate */
+
   INA226_PV_Init();
   INA226_3_Init();
   CAN_App_Init();
@@ -460,38 +496,74 @@ void StartTask04(void const * argument)
 
   for(;;)
   {
-    /* Read PV INA226 (PB1/PB2) */
-    if (INA226_PV_ReadData(&pv_data) == 0)
+    /* Read PV INA226 (PB13/PB12) - every 5th loop (1s) with moving average */
+    pv_read_div++;
+    if (pv_read_div >= 5)
     {
-      osMutexWait(g_mutex, osWaitForever);
-      g_sensor.pv_voltage = pv_data.bus_voltage;
-      g_sensor.pv_current = pv_data.current;
-      g_sensor.pv_power = pv_data.power;
-      g_sensor.pv_ok = 1;
-      osMutexRelease(g_mutex);
-    }
-    else
-    {
-      osMutexWait(g_mutex, osWaitForever);
-      g_sensor.pv_ok = 0;
-      osMutexRelease(g_mutex);
+      pv_read_div = 0;
+      if (INA226_PV_ReadData(&pv_data) == 0)
+      {
+        /* Add to circular buffer */
+        pv_v_buf[pv_avg_idx] = pv_data.bus_voltage;
+        pv_i_buf[pv_avg_idx] = pv_data.current;
+        pv_p_buf[pv_avg_idx] = pv_data.power;
+        pv_avg_idx = (pv_avg_idx + 1) % PV_AVG_N;
+        if (pv_avg_cnt < PV_AVG_N) pv_avg_cnt++;
+
+        /* Calculate average */
+        float sum_v = 0, sum_i = 0, sum_p = 0;
+        for (int j = 0; j < pv_avg_cnt; j++) {
+            sum_v += pv_v_buf[j];
+            sum_i += pv_i_buf[j];
+            sum_p += pv_p_buf[j];
+        }
+        osMutexWait(g_mutex, osWaitForever);
+        g_sensor.pv_voltage = sum_v / pv_avg_cnt;
+        g_sensor.pv_current = sum_i / pv_avg_cnt;
+        g_sensor.pv_power   = sum_p / pv_avg_cnt;
+        g_sensor.pv_ok = 1;
+        osMutexRelease(g_mutex);
+      }
+      else
+      {
+        osMutexWait(g_mutex, osWaitForever);
+        g_sensor.pv_ok = 0;
+        osMutexRelease(g_mutex);
+      }
     }
 
-    /* Read INA226 #3 (PB12/PB13) */
-    if (INA226_3_ReadData(&ina3_data) == 0)
+    /* Read INA226 #3 (PB3/PB2) - every 5th loop (1s) with moving average */
+    ina3_read_div++;
+    if (ina3_read_div >= 5)
     {
-      osMutexWait(g_mutex, osWaitForever);
-      g_sensor.ina3_voltage = ina3_data.bus_voltage;
-      g_sensor.ina3_current = ina3_data.current;
-      g_sensor.ina3_power = ina3_data.power;
-      g_sensor.ina3_ok = 1;
-      osMutexRelease(g_mutex);
-    }
-    else
-    {
-      osMutexWait(g_mutex, osWaitForever);
-      g_sensor.ina3_ok = 0;
-      osMutexRelease(g_mutex);
+      ina3_read_div = 0;
+      if (INA226_3_ReadData(&ina3_data) == 0)
+      {
+        ina3_v_buf[ina3_avg_idx] = ina3_data.bus_voltage;
+        ina3_i_buf[ina3_avg_idx] = ina3_data.current;
+        ina3_p_buf[ina3_avg_idx] = ina3_data.power;
+        ina3_avg_idx = (ina3_avg_idx + 1) % PV_AVG_N;
+        if (ina3_avg_cnt < PV_AVG_N) ina3_avg_cnt++;
+
+        float sum_v = 0, sum_i = 0, sum_p = 0;
+        for (int j = 0; j < ina3_avg_cnt; j++) {
+            sum_v += ina3_v_buf[j];
+            sum_i += ina3_i_buf[j];
+            sum_p += ina3_p_buf[j];
+        }
+        osMutexWait(g_mutex, osWaitForever);
+        g_sensor.ina3_voltage = sum_v / ina3_avg_cnt;
+        g_sensor.ina3_current = sum_i / ina3_avg_cnt;
+        g_sensor.ina3_power   = sum_p / ina3_avg_cnt;
+        g_sensor.ina3_ok = 1;
+        osMutexRelease(g_mutex);
+      }
+      else
+      {
+        osMutexWait(g_mutex, osWaitForever);
+        g_sensor.ina3_ok = 0;
+        osMutexRelease(g_mutex);
+      }
     }
 
     /* Signal LCD to update */
@@ -566,14 +638,14 @@ void StartTask05(void const * argument)
   lcd_show_string(10, 64, 100, 16, 16, "P:", BLUE);
   lcd_show_string(10, 82, 100, 16, 16, "SOC:", BLUE);
 
-  /* Section 2: PV INA226 */
-  lcd_show_string(10, 100, 200, 16, 16, "Solar PV", RED);
+  /* Section 2: Home Load (INA226 #3) */
+  lcd_show_string(10, 100, 200, 16, 16, "Home Load", RED);
   lcd_show_string(10, 118, 100, 16, 16, "V:", BLUE);
   lcd_show_string(10, 136, 100, 16, 16, "I:", BLUE);
   lcd_show_string(10, 154, 100, 16, 16, "P:", BLUE);
 
-  /* Section 3: INA226 #3 */
-  lcd_show_string(10, 172, 200, 16, 16, "Sensor #3", RED);
+  /* Section 3: Solar PV (INA226 #2) */
+  lcd_show_string(10, 172, 200, 16, 16, "Solar PV", RED);
   lcd_show_string(10, 190, 100, 16, 16, "V:", BLUE);
   lcd_show_string(10, 208, 100, 16, 16, "I:", BLUE);
   lcd_show_string(10, 226, 100, 16, 16, "P:", BLUE);
@@ -652,29 +724,29 @@ void StartTask05(void const * argument)
       }
     }
 
-    /* === Section 2: PV (INA226 #2) === */
-    if (local.pv_ok != prev.pv_ok ||
-        local.pv_voltage != prev.pv_voltage ||
-        local.pv_current != prev.pv_current ||
-        local.pv_power != prev.pv_power)
+    /* === Section 2: Home Load (INA226 #3) === */
+    if (local.ina3_ok != prev.ina3_ok ||
+        local.ina3_voltage != prev.ina3_voltage ||
+        local.ina3_current != prev.ina3_current ||
+        local.ina3_power != prev.ina3_power)
     {
       lcd_fill(30, 118, 240, 172, WHITE);
-      if (local.pv_ok)
+      if (local.ina3_ok)
       {
-        int pv_i = (int)local.pv_voltage;
-        int pv_f = (int)((local.pv_voltage - pv_i) * 1000);
-        if (pv_f < 0) pv_f = -pv_f;
-        lcd_show_num(30, 118, pv_i, 1, 16, RED);
+        int n3_i = (int)local.ina3_voltage;
+        int n3_f = (int)((local.ina3_voltage - n3_i) * 1000);
+        if (n3_f < 0) n3_f = -n3_f;
+        lcd_show_num(30, 118, n3_i, 1, 16, RED);
         lcd_show_char(38, 118, '.', 16, 0, RED);
-        lcd_show_num(46, 118, pv_f, 3, 16, RED);
+        lcd_show_num(46, 118, n3_f, 3, 16, RED);
         lcd_show_string(80, 118, 20, 16, 16, "V", RED);
 
-        int pi_ma = (int)(local.pv_current * 1000.0f);
-        lcd_show_num(30, 136, pi_ma, 5, 16, RED);
+        int n3ma = (int)(local.ina3_current * 1000.0f);
+        lcd_show_num(30, 136, n3ma, 5, 16, RED);
         lcd_show_string(78, 136, 30, 16, 16, "mA", RED);
 
-        int pp_mw = (int)(local.pv_power * 1000.0f);
-        lcd_show_num(30, 154, pp_mw, 5, 16, RED);
+        int n3pw = (int)(local.ina3_power * 1000.0f);
+        lcd_show_num(30, 154, n3pw, 5, 16, RED);
         lcd_show_string(78, 154, 30, 16, 16, "mW", RED);
       }
       else
@@ -683,29 +755,29 @@ void StartTask05(void const * argument)
       }
     }
 
-    /* === Section 3: INA226 #3 === */
-    if (local.ina3_ok != prev.ina3_ok ||
-        local.ina3_voltage != prev.ina3_voltage ||
-        local.ina3_current != prev.ina3_current ||
-        local.ina3_power != prev.ina3_power)
+    /* === Section 3: Solar PV (INA226 #2) === */
+    if (local.pv_ok != prev.pv_ok ||
+        local.pv_voltage != prev.pv_voltage ||
+        local.pv_current != prev.pv_current ||
+        local.pv_power != prev.pv_power)
     {
       lcd_fill(30, 190, 240, 244, WHITE);
-      if (local.ina3_ok)
+      if (local.pv_ok)
       {
-        int n3_i = (int)local.ina3_voltage;
-        int n3_f = (int)((local.ina3_voltage - n3_i) * 1000);
-        if (n3_f < 0) n3_f = -n3_f;
-        lcd_show_num(30, 190, n3_i, 1, 16, RED);
+        int pv_i = (int)local.pv_voltage;
+        int pv_f = (int)((local.pv_voltage - pv_i) * 1000);
+        if (pv_f < 0) pv_f = -pv_f;
+        lcd_show_num(30, 190, pv_i, 1, 16, RED);
         lcd_show_char(38, 190, '.', 16, 0, RED);
-        lcd_show_num(46, 190, n3_f, 3, 16, RED);
+        lcd_show_num(46, 190, pv_f, 3, 16, RED);
         lcd_show_string(80, 190, 20, 16, 16, "V", RED);
 
-        int n3ma = (int)(local.ina3_current * 1000.0f);
-        lcd_show_num(30, 208, n3ma, 5, 16, RED);
+        int pi_ma = (int)(local.pv_current * 1000.0f);
+        lcd_show_num(30, 208, pi_ma, 5, 16, RED);
         lcd_show_string(78, 208, 30, 16, 16, "mA", RED);
 
-        int n3pw = (int)(local.ina3_power * 1000.0f);
-        lcd_show_num(30, 226, n3pw, 5, 16, RED);
+        int pp_mw = (int)(local.pv_power * 1000.0f);
+        lcd_show_num(30, 226, pp_mw, 5, 16, RED);
         lcd_show_string(78, 226, 30, 16, 16, "mW", RED);
       }
       else

@@ -4,13 +4,13 @@
 #include "main.h"
 
 /* INA226 PV I2C Address (A0=VCC, A1=GND → 0x41) */
-#define INA226_PV_ADDR          0x41
+#define INA226_PV_ADDR          0x44
 
-/* Software I2C Pin Definitions (PB1=SCL, PB2=SDA) */
+/* Software I2C Pin Definitions (PB13=SCL, PB12=SDA) */
 #define INA226_PV_SCL_PORT      GPIOB
-#define INA226_PV_SCL_PIN       GPIO_PIN_1
+#define INA226_PV_SCL_PIN       GPIO_PIN_13
 #define INA226_PV_SDA_PORT      GPIOB
-#define INA226_PV_SDA_PIN       GPIO_PIN_2
+#define INA226_PV_SDA_PIN       GPIO_PIN_12
 
 /* IO Operations */
 #define INA226_PV_SCL_HIGH()    HAL_GPIO_WritePin(INA226_PV_SCL_PORT, INA226_PV_SCL_PIN, GPIO_PIN_SET)

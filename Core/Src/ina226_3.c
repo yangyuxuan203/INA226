@@ -161,8 +161,16 @@ void INA226_3_Init(void)
     delay_ms(10);
     INA226_3_WriteReg(INA226_REG_CALIBRATION, 0x0066);
     delay_ms(10);
-    printf("INA226_3: init done (PB13=SCL, PB12=SDA, addr=0x%02X)\r\n", INA226_3_ADDR);
+    printf("INA226_3: init done (PB3=SCL, PB2=SDA, addr=0x%02X)\r\n", INA226_3_ADDR);
 }
+
+/*
+ * INA226 #3 calibration (R_shunt = 0.2Ω, Cal = 0x0066 = 102):
+ *   Current_LSB = 0.00512 / (102 × 0.2) = 0.000251A = 251µA/bit
+ *   Power_LSB = 25 × Current_LSB = 0.006275W = 6.275mW/bit
+ */
+#define INA226_3_CURRENT_LSB    0.000251f   /* A/bit */
+#define INA226_3_POWER_LSB      0.006275f   /* W/bit */
 
 uint8_t INA226_3_ReadData(INA226_Data *data)
 {
@@ -170,8 +178,8 @@ uint8_t INA226_3_ReadData(INA226_Data *data)
 
     data->bus_voltage = INA226_3_ReadReg(INA226_REG_BUS_VOLT) * INA226_BUS_VOLT_LSB;
     data->shunt_voltage = (int16_t)INA226_3_ReadReg(INA226_REG_SHUNT_VOLT) * INA226_SHUNT_VOLT_LSB;
-    data->current = (int16_t)INA226_3_ReadReg(INA226_REG_CURRENT) * 0.00000703f;
-    data->power = INA226_3_ReadReg(INA226_REG_POWER) * 0.00017575f;
+    data->current = (int16_t)INA226_3_ReadReg(INA226_REG_CURRENT) * INA226_3_CURRENT_LSB;
+    data->power = INA226_3_ReadReg(INA226_REG_POWER) * INA226_3_POWER_LSB;
 
     return 0;
 }

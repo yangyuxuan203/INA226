@@ -2,6 +2,9 @@
 #include "delay.h"
 #include <stdio.h>
 
+/* Debug: print raw register values on first few reads */
+static uint8_t pv_dbg_cnt = 3;
+
 /* Software I2C Low-level Functions for PV INA226 (PB1=SCL, PB2=SDA) */
 
 static void INA226_PV_IIC_Init(void)
@@ -176,32 +179,99 @@ static uint16_t INA226_PV_ReadReg(uint8_t reg)
 
 void INA226_PV_Init(void)
 {
+    uint8_t ret;
+    uint16_t cfg;
+
     INA226_PV_IIC_Init();
     delay_ms(10);
 
     /* Reset the device */
-    INA226_PV_WriteReg(INA226_REG_CONFIG, INA226_CONFIG_RESET);
+    ret = INA226_PV_WriteReg(INA226_REG_CONFIG, INA226_CONFIG_RESET);
+    printf("INA226_PV: reset ret=%d\r\n", ret);
     delay_ms(10);
 
-    /* Same config as main INA226: 16 samples avg, 1.1ms conversion, continuous */
-    INA226_PV_WriteReg(INA226_REG_CONFIG, 0x0927);
+    /* Config: 16 samples avg, 1.1ms conversion, continuous */
+    ret = INA226_PV_WriteReg(INA226_REG_CONFIG, 0x0927);
+    printf("INA226_PV: cfg write ret=%d\r\n", ret);
     delay_ms(10);
 
-    /* Calibration: same as main INA226 (adjust if shunt resistor differs) */
-    INA226_PV_WriteReg(INA226_REG_CALIBRATION, 0x0066);
+    /* Read back config to verify */
+    cfg = INA226_PV_ReadReg(INA226_REG_CONFIG);
+    printf("INA226_PV: cfg readback=0x%04X (expect 0x0927)\r\n", cfg);
+
+    if (cfg != 0x0927) {
+        printf("INA226_PV: CONFIG MISMATCH! Retrying...\r\n");
+        INA226_PV_WriteReg(INA226_REG_CONFIG, 0x0927);
+        delay_ms(10);
+        cfg = INA226_PV_ReadReg(INA226_REG_CONFIG);
+        printf("INA226_PV: cfg retry=0x%04X\r\n", cfg);
+    }
+
+    /* Calibration */
+    ret = INA226_PV_WriteReg(INA226_REG_CALIBRATION, 0x0066);
+    printf("INA226_PV: cal write ret=%d\r\n", ret);
     delay_ms(10);
 
-    printf("INA226_PV: init done (PB1=SCL, PB2=SDA, addr=0x%02X)\r\n", INA226_PV_ADDR);
+    /* Final register dump */
+    uint16_t cal = INA226_PV_ReadReg(INA226_REG_CALIBRATION);
+    uint16_t mfr = INA226_PV_ReadReg(INA226_REG_MANUFACTURER);
+    uint16_t die = INA226_PV_ReadReg(INA226_REG_DIE_ID);
+    printf("INA226_PV: cfg=0x%04X cal=0x%04X mfr=0x%04X die=0x%04X\r\n", cfg, cal, mfr, die);
+}
+
+/*
+ * PV INA226 calibration (R_shunt = 0.1Ω, Cal = 0x0066 = 102):
+ *   Measured: 772mA reading vs 1A actual → corrected LSB = 0.502 × (1000/772)
+ *   Current_LSB = 0.000650A = 650µA/bit
+ *   Power_LSB = 25 × Current_LSB = 0.01625W = 16.25mW/bit
+ */
+#define INA226_PV_CURRENT_LSB   0.000650f     /* A/bit */
+#define INA226_PV_POWER_LSB     0.01625f      /* W/bit */
+
+/* I2C bus recovery: toggle SCL to unstick SDA */
+static void INA226_PV_IIC_Recovery(void)
+{
+    INA226_PV_SDA_HIGH();
+    for (int i = 0; i < 9; i++) {
+        INA226_PV_SCL_LOW();
+        INA226_PV_IIC_Delay();
+        INA226_PV_SCL_HIGH();
+        INA226_PV_IIC_Delay();
+    }
+    INA226_PV_IIC_Stop();
 }
 
 uint8_t INA226_PV_ReadData(INA226_Data *data)
 {
+    uint16_t raw_v, raw_c, raw_p, raw_sv, cfg;
+
     if (data == NULL) return 1;
 
-    data->bus_voltage = INA226_PV_ReadReg(INA226_REG_BUS_VOLT) * INA226_BUS_VOLT_LSB;
-    data->shunt_voltage = (int16_t)INA226_PV_ReadReg(INA226_REG_SHUNT_VOLT) * INA226_SHUNT_VOLT_LSB;
-    data->current = (int16_t)INA226_PV_ReadReg(INA226_REG_CURRENT) * 0.00000703f;
-    data->power = INA226_PV_ReadReg(INA226_REG_POWER) * 0.00017575f;
+    /* Check if SDA is stuck low, recover if needed */
+    if (INA226_PV_SDA_READ() == 0) {
+        INA226_PV_IIC_Recovery();
+        /* Re-init after recovery */
+        INA226_PV_WriteReg(INA226_REG_CONFIG, 0x0927);
+        INA226_PV_WriteReg(INA226_REG_CALIBRATION, 0x0066);
+    }
+
+    raw_v  = INA226_PV_ReadReg(INA226_REG_BUS_VOLT);
+    raw_sv = INA226_PV_ReadReg(INA226_REG_SHUNT_VOLT);
+    raw_c  = INA226_PV_ReadReg(INA226_REG_CURRENT);
+    raw_p  = INA226_PV_ReadReg(INA226_REG_POWER);
+    cfg    = INA226_PV_ReadReg(INA226_REG_CONFIG);
+
+    data->bus_voltage   = raw_v * INA226_BUS_VOLT_LSB;
+    data->shunt_voltage = (int16_t)raw_sv * INA226_SHUNT_VOLT_LSB;
+    data->current       = (int16_t)raw_c * INA226_PV_CURRENT_LSB;
+    data->power         = raw_p * INA226_PV_POWER_LSB;
+
+    if (pv_dbg_cnt > 0) {
+        pv_dbg_cnt--;
+        printf("PV: cfg=0x%04X bus=%u shunt=%d cur=%d pwr=%u V=%.3f\r\n",
+               cfg, raw_v, (int16_t)raw_sv, (int16_t)raw_c, raw_p,
+               (double)data->bus_voltage);
+    }
 
     return 0;
 }
