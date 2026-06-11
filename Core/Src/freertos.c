@@ -125,13 +125,13 @@ void Relay_Control(float pv_power, float home_soc, float car_soc, uint8_t sensor
 
 /**
   * @brief  Relay control function
-  *         MOS1: PV → home battery (F4)
-  *         MOS2: home battery → car battery (F1)
+  *         MOS1: PV -> home battery (F4)
+  *         MOS2: home battery -> car battery (F1)
   *         When both full, DAC output = 0
   * @param  pv_power: solar PV power (mW), from INA226
   * @param  home_soc: home battery SOC (0-100), from INA226
   * @param  car_soc: car battery SOC (0-100), from CAN
-  * @param  sensor_ok: INA226 sensor status (0=no data, safe default=ON)
+  * @param  sensor_ok: INA226 sensor status (0=no data, safe default=OFF)
   */
 void Relay_Control(float pv_power, float home_soc, float car_soc, uint8_t sensor_ok)
 {
@@ -144,7 +144,7 @@ void Relay_Control(float pv_power, float home_soc, float car_soc, uint8_t sensor
         return;
     }
 
-    /* MOS1: PV → home battery, when home < 90% */
+    /* MOS1: PV -> home battery, when home < 90% */
     if (home_soc < 90.0f)
     {
         HAL_GPIO_WritePin(GPIOD, GPIO_PIN_6, GPIO_PIN_SET);    /* MOS1 ON */
@@ -154,7 +154,7 @@ void Relay_Control(float pv_power, float home_soc, float car_soc, uint8_t sensor
         HAL_GPIO_WritePin(GPIOD, GPIO_PIN_6, GPIO_PIN_RESET);  /* MOS1 OFF */
     }
 
-    /* MOS2: home → car battery, when home > 80% and car < 90% */
+    /* MOS2: home battery -> car battery, when home > 80% and car < 90% */
     if (home_soc > 80.0f && car_soc < 90.0f)
     {
         HAL_GPIO_WritePin(GPIOD, GPIO_PIN_7, GPIO_PIN_SET);    /* MOS2 ON */
@@ -164,7 +164,7 @@ void Relay_Control(float pv_power, float home_soc, float car_soc, uint8_t sensor
         HAL_GPIO_WritePin(GPIOD, GPIO_PIN_7, GPIO_PIN_RESET);  /* MOS2 OFF */
     }
 
-    /* Both full → DAC = 0 */
+    /* Both full -> DAC = 0 */
     if (home_soc >= 95.0f && car_soc >= 95.0f)
     {
         g_charging_active = 0;
@@ -380,7 +380,7 @@ void StartTask01(void const * argument)
 }
 
 /**
-  * @brief  ADC task: MQ9 gas sensor on PA1 (ADC1_CH1)
+  * @brief  ADC task: MQ9 gas sensor on PA7 (ADC1_CH7)
   */
 void StartTask02(void const * argument)
 {
@@ -407,7 +407,7 @@ void StartTask02(void const * argument)
 }
 
 /**
-  * @brief  GY30 light sensor task (software I2C on PC1/PC2)
+  * @brief  GY30 light sensor task (software I2C on PC3/PC4)
   */
 void StartTask03(void const * argument)
 {
@@ -584,7 +584,7 @@ void StartTask04(void const * argument)
       g_f1_cmd_updated = 1;
     }
 
-    /* Relay control logic (always call, sensor_ok=0 → default ON) */
+    /* Relay control logic (always call; sensor_ok=0 -> default OFF) */
     Relay_Control(local_data.pv_power * 1000.0f, local_data.soc_pct,
                   g_f1_battery.soc_pct, local_data.ina226_ok);
 

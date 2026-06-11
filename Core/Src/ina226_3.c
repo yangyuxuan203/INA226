@@ -2,7 +2,7 @@
 #include "delay.h"
 #include <stdio.h>
 
-/* Software I2C Low-level Functions for INA226 #3 (PB13=SCL, PB12=SDA) */
+/* Software I2C low-level functions for INA226 #3 (PB3=SCL, PB2=SDA) */
 
 static void INA226_3_IIC_Init(void)
 {
@@ -165,9 +165,9 @@ void INA226_3_Init(void)
 }
 
 /*
- * INA226 #3 calibration (R_shunt = 0.2Ω, Cal = 0x0066 = 102):
- *   Current_LSB = 0.00512 / (102 × 0.2) = 0.000251A = 251µA/bit
- *   Power_LSB = 25 × Current_LSB = 0.006275W = 6.275mW/bit
+ * INA226 #3 calibration (R_shunt = 0.2 ohm, Cal = 0x0066 = 102):
+ *   Current_LSB = 0.00512 / (102 * 0.2) = 0.000251A = 251uA/bit
+ *   Power_LSB = 25 * Current_LSB = 0.006275W = 6.275mW/bit
  */
 #define INA226_3_CURRENT_LSB    0.000251f   /* A/bit */
 #define INA226_3_POWER_LSB      0.006275f   /* W/bit */

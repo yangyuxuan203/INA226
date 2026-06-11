@@ -4,7 +4,7 @@
 #include "main.h"
 
 /* BH1750 (GY30) I2C Address */
-#define GY30_ADDR           0X23    /* ADDR pin = floating/VCC (ADO悬空时默认高电平) */
+#define GY30_ADDR           0X23    /* ADDR pin = floating/VCC */
 
 /* BH1750 Instruction Set */
 #define GY30_POWER_OFF      0x00

@@ -8,17 +8,8 @@ set(User_Include_Dirs
 
 # User sources
 set(User_Sources
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../LCD/lcd.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../LCD/ctiic.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../LCD/ft5206.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../LCD/gt9xxx.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../LCD/touch.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../LCD/24cxx_stub.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/delay.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/ina226.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/ina226_pv.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/ina226_3.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/gy30.c
 )
 
 # Interface library for user code

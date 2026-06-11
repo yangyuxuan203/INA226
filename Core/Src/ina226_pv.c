@@ -5,7 +5,7 @@
 /* Debug: print raw register values on first few reads */
 static uint8_t pv_dbg_cnt = 3;
 
-/* Software I2C Low-level Functions for PV INA226 (PB1=SCL, PB2=SDA) */
+/* Software I2C low-level functions for PV INA226 (PB13=SCL, PB12=SDA) */
 
 static void INA226_PV_IIC_Init(void)
 {
@@ -220,10 +220,10 @@ void INA226_PV_Init(void)
 }
 
 /*
- * PV INA226 calibration (R_shunt = 0.1Ω, Cal = 0x0066 = 102):
- *   Measured: 772mA reading vs 1A actual → corrected LSB = 0.502 × (1000/772)
- *   Current_LSB = 0.000650A = 650µA/bit
- *   Power_LSB = 25 × Current_LSB = 0.01625W = 16.25mW/bit
+ * PV INA226 calibration (R_shunt = 0.1 ohm, Cal = 0x0066 = 102):
+ *   Measured: 772mA reading vs 1A actual -> corrected LSB = 0.502 * (1000/772)
+ *   Current_LSB = 0.000650A = 650uA/bit
+ *   Power_LSB = 25 * Current_LSB = 0.01625W = 16.25mW/bit
  */
 #define INA226_PV_CURRENT_LSB   0.000650f     /* A/bit */
 #define INA226_PV_POWER_LSB     0.01625f      /* W/bit */
