@@ -35,6 +35,7 @@
 #include "lcd.h"
 #include "touch.h"
 #include "dac.h"
+#include "esp8266_udp.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -97,6 +98,10 @@ volatile uint8_t g_f1_cmd_updated = 0;
 /* DAC control flag: 1 = charging active (DAC follows light), 0 = all full (DAC = 0) */
 volatile uint8_t g_charging_active = 1;
 
+/* ESP32-S3 data received through ESP8266 UDP */
+ESP32S3_Data_t g_esp32s3_data = {0};
+volatile uint8_t g_esp32s3_updated = 0;
+
 /* USER CODE END Variables */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -104,6 +109,21 @@ volatile uint8_t g_charging_active = 1;
 
 /* Relay control function */
 void Relay_Control(float pv_power, float home_soc, float car_soc, uint8_t sensor_ok);
+void StartTask06(void const * argument);
+
+static char *ESP32S3_StateText(uint8_t state)
+{
+  switch (state)
+  {
+    case 0: return "REST";
+    case 1: return "WRIST";
+    case 2: return "WALK";
+    case 3: return "RUN";
+    case 4: return "FALL";
+    case 5: return "SPORT";
+    default: return "UNKN";
+  }
+}
 
 /* USER CODE END Function Prototypes */
 
@@ -623,10 +643,13 @@ void StartTask05(void const * argument)
   SensorData_t prev;
   uint8_t touch_ok;
   CAN_BatteryData_t prev_f1_battery;
+  ESP32S3_Data_t local_esp32s3;
+  ESP32S3_Data_t prev_esp32s3;
 
   /* Initialize prev to invalid values so first update always draws */
   memset(&prev, 0xFF, sizeof(prev));
   memset(&prev_f1_battery, 0, sizeof(prev_f1_battery));
+  memset(&prev_esp32s3, 0xFF, sizeof(prev_esp32s3));
 
   /* Clear screen and draw static labels */
   lcd_clear(WHITE);
@@ -667,6 +690,9 @@ void StartTask05(void const * argument)
   lcd_show_string(10, 424, 200, 16, 16, "MOS1(PV):", BLUE);
   lcd_show_string(10, 442, 200, 16, 16, "MOS2(Car):", BLUE);
 
+  /* Section 7: ESP32-S3 wearable data */
+  lcd_show_string(10, 460, 40, 12, 12, "S3:", RED);
+
   /* Initialize touch screen */
   touch_ok = tp_init();
   if (touch_ok == 0) {
@@ -681,6 +707,7 @@ void StartTask05(void const * argument)
     osMutexWait(g_mutex, osWaitForever);
     local = g_sensor;
     osMutexRelease(g_mutex);
+    local_esp32s3 = g_esp32s3_data;
 
     /* === Section 1: Home Battery (INA226 #1) === */
     if (local.ina226_ok != prev.ina226_ok ||
@@ -910,6 +937,46 @@ void StartTask05(void const * argument)
       prev_mos2_state = mos2;
     }
 
+    /* === Section 7: ESP32-S3 wearable data === */
+    if (local_esp32s3.valid != prev_esp32s3.valid ||
+        local_esp32s3.bat_v != prev_esp32s3.bat_v ||
+        local_esp32s3.bat_pct != prev_esp32s3.bat_pct ||
+        local_esp32s3.hr != prev_esp32s3.hr ||
+        local_esp32s3.spo2 != prev_esp32s3.spo2 ||
+        local_esp32s3.state != prev_esp32s3.state)
+    {
+      lcd_fill(30, 460, 240, 479, WHITE);
+      if (local_esp32s3.valid)
+      {
+        int ev_i = (int)local_esp32s3.bat_v;
+        int ev_f = (int)((local_esp32s3.bat_v - ev_i) * 100);
+        int ep_i = (int)local_esp32s3.bat_pct;
+        if (ev_f < 0) ev_f = -ev_f;
+
+        lcd_show_num(30, 460, ev_i, 1, 12, RED);
+        lcd_show_char(36, 460, '.', 12, 0, RED);
+        lcd_show_num(42, 460, ev_f, 2, 12, RED);
+        lcd_show_string(56, 460, 10, 12, 12, "V", RED);
+        lcd_show_num(68, 460, ep_i, 3, 12, RED);
+        lcd_show_string(88, 460, 10, 12, 12, "%", RED);
+        lcd_show_string(102, 460, 12, 12, 12, "H", BLUE);
+        lcd_show_num(112, 460, local_esp32s3.hr, 3, 12, RED);
+        lcd_show_string(136, 460, 12, 12, 12, "O", BLUE);
+        lcd_show_num(146, 460, local_esp32s3.spo2, 3, 12, RED);
+        lcd_show_string(170, 460, 18, 12, 12, "ST", BLUE);
+        lcd_show_string(190, 460, 48, 12, 12, ESP32S3_StateText(local_esp32s3.state),
+                        local_esp32s3.state == 4 ? RED : GREEN);
+      }
+      else
+      {
+        lcd_show_string(30, 460, 120, 12, 12,
+                        ESP8266_UDP_HasPeer() ? "NO JSON" : "WAIT S3",
+                        GRAY);
+      }
+
+      prev_esp32s3 = local_esp32s3;
+    }
+
     /* Save current values for next comparison */
     prev = local;
 
@@ -927,6 +994,56 @@ void StartTask05(void const * argument)
 
     /* Wait for sensor data update, or timeout after 500ms (for touch) */
     osSemaphoreWait(g_lcd_update, 500);
+  }
+}
+
+/**
+* @brief ESP8266 UDP task on USART3 (PB10=TX, PB11=RX).
+*        Receives ESP32-S3 health/battery data and sends F4 telemetry once per minute.
+*/
+void StartTask06(void const * argument)
+{
+  SensorData_t local;
+  ESP32S3_Data_t rx;
+  uint32_t last_send_tick = 0;
+
+  printf("ESP8266 task start\r\n");
+  osDelay(2000);
+  if (ESP8266_UDP_Init() == 0)
+  {
+    printf("ESP8266 UDP ready (USART3 PB10/PB11)\r\n");
+  }
+  else
+  {
+    printf("ESP8266 UDP init failed\r\n");
+  }
+
+  for (;;)
+  {
+    if (ESP8266_UDP_PollReceive(&rx, 200) == 0)
+    {
+      g_esp32s3_data = rx;
+      g_esp32s3_updated = 1;
+      printf("ESP32S3: bat=%.3fV %.1f%% hr=%u spo2=%u state=%u\r\n",
+             (double)rx.bat_v, (double)rx.bat_pct,
+             rx.hr, rx.spo2, rx.state);
+    }
+
+    if ((HAL_GetTick() - last_send_tick) >= 60000U)
+    {
+      last_send_tick = HAL_GetTick();
+
+      osMutexWait(g_mutex, osWaitForever);
+      local = g_sensor;
+      osMutexRelease(g_mutex);
+
+      if (ESP8266_UDP_SendTelemetry(local.lux, local.ina3_power, local.pv_power) != 0)
+      {
+        printf("ESP8266 telemetry send failed\r\n");
+      }
+    }
+
+    osDelay(20);
   }
 }
 
@@ -996,6 +1113,12 @@ void MX_FREERTOS_Init(void)
 
   osThreadDef(lcd, StartTask05, osPriorityBelowNormal, 0, 768);
   osThreadCreate(osThread(lcd), NULL);
+
+  osThreadDef(esp8266, StartTask06, osPriorityBelowNormal, 0, 768);
+  if (osThreadCreate(osThread(esp8266), NULL) == NULL)
+  {
+    printf("ESP8266 task create failed\r\n");
+  }
 }
 
 /* USER CODE END Application */

@@ -108,6 +108,7 @@ int main(void)
   MX_FSMC_Init();
   MX_CAN1_Init();
   MX_DAC_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
   /* 串口直接测试 - 绕过printf验证硬件 */
   {

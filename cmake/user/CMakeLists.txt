@@ -4,12 +4,16 @@ cmake_minimum_required(VERSION 3.22)
 set(User_Include_Dirs
     ${CMAKE_CURRENT_SOURCE_DIR}/../../LCD
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Inc
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../CJSON
 )
 
 # User sources
 set(User_Sources
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/ina226_pv.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/ina226_3.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/esp8266_at.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/esp8266_udp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../CJSON/cJSON.c
 )
 
 # Interface library for user code
