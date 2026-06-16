@@ -46,6 +46,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define MAIN_VERBOSE_LOG 0U
 
 /* USER CODE END PD */
 
@@ -95,7 +96,6 @@ int main(void)
 
   /* Configure the system clock */
   SystemClock_Config();
-
   /* USER CODE BEGIN SysInit */
 
   /* USER CODE END SysInit */
@@ -104,6 +104,7 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_USART1_UART_Init();
+  MX_USART2_UART_Init();
   MX_ADC1_Init();
   MX_FSMC_Init();
   MX_CAN1_Init();
@@ -111,17 +112,18 @@ int main(void)
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
   /* 串口直接测试 - 绕过printf验证硬件 */
+  if (MAIN_VERBOSE_LOG)
   {
     char *boot_msg = "\r\n=== UART1 Direct Test ===\r\n";
     HAL_UART_Transmit(&huart1, (uint8_t *)boot_msg, strlen(boot_msg), HAL_MAX_DELAY);
   }
 
   /* printf测试 */
-  printf("=== printf Test ===\r\n");
+  if (MAIN_VERBOSE_LOG) printf("=== printf Test ===\r\n");
 
   delay_init();
   lcd_init();
-  printf("LCD init done\r\n");
+  if (MAIN_VERBOSE_LOG) printf("LCD init done\r\n");
   /* USER CODE END 2 */
 
   /* Call init function for freertos objects (in cmsis_os2.c) */

@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#define ESP8266_UDP_VERBOSE_LOG 0U
+
 static uint8_t g_cjson_hooks_ready = 0;
 static char g_esp32s3_ip[32] = {0};
 static uint16_t g_esp32s3_src_port = 0;
@@ -59,61 +61,64 @@ uint8_t ESP8266_UDP_Init(void)
 
     ESP8266_JSON_InitHooks();
 
-    printf("ESP8266: start DMA\r\n");
+    if (ESP8266_UDP_VERBOSE_LOG) printf("ESP8266: start DMA\r\n");
     if (ESP8266_AT_StartDma() != 0)
     {
-        printf("ESP8266: DMA start failed\r\n");
+        if (ESP8266_UDP_VERBOSE_LOG) printf("ESP8266: DMA start failed\r\n");
         return 1;
     }
 
-    printf("ESP8266: AT test\r\n");
+    if (ESP8266_UDP_VERBOSE_LOG) printf("ESP8266: AT test\r\n");
     if (ESP8266_AT_SendCmd(ESP8266_AT_CMD_TEST, ESP8266_AT_RSP_OK, 1000) != 0)
     {
-        printf("ESP8266: AT no response\r\n");
+        if (ESP8266_UDP_VERBOSE_LOG) printf("ESP8266: AT no response\r\n");
         return 1;
     }
 
     ESP8266_AT_SendCmd(ESP8266_AT_CMD_ECHO_OFF, ESP8266_AT_RSP_OK, 1000);
 
-    printf("ESP8266: station mode\r\n");
+    if (ESP8266_UDP_VERBOSE_LOG) printf("ESP8266: station mode\r\n");
     if (ESP8266_AT_SendCmd(ESP8266_AT_CMD_STATION_MODE, ESP8266_AT_RSP_OK, 1000) != 0)
     {
-        printf("ESP8266: CWMODE failed\r\n");
+        if (ESP8266_UDP_VERBOSE_LOG) printf("ESP8266: CWMODE failed\r\n");
         return 1;
     }
 
     ESP8266_AT_SendCmd(ESP8266_AT_CMD_AUTO_CONN_OFF, ESP8266_AT_RSP_OK, 1000);
     ESP8266_AT_SendCmd(ESP8266_AT_CMD_QUIT_AP, ESP8266_AT_RSP_OK, 1000);
     ESP8266_AT_SendCmd(ESP8266_AT_CMD_DHCP_ON, ESP8266_AT_RSP_OK, 1000);
-    printf("ESP8266: join AP %s\r\n", ESP8266_WIFI_SSID);
+    if (ESP8266_UDP_VERBOSE_LOG) printf("ESP8266: join AP %s\r\n", ESP8266_WIFI_SSID);
     if (ESP8266_AT_JoinAp(ESP8266_WIFI_SSID, ESP8266_WIFI_PASSWORD) != 0)
     {
-        printf("ESP8266: join AP failed\r\n");
+        if (ESP8266_UDP_VERBOSE_LOG) printf("ESP8266: join AP failed\r\n");
         return 1;
     }
-    printf("ESP8266: WiFi joined\r\n");
+    if (ESP8266_UDP_VERBOSE_LOG) printf("ESP8266: WiFi joined\r\n");
     ESP8266_AT_ClearRx();
     ESP8266_AT_SendRaw(ESP8266_AT_CMD_GET_IP);
     ESP8266_AT_SendRaw("\r\n");
     ESP8266_AT_ReadUntil(ip_rsp, sizeof(ip_rsp), ESP8266_AT_RSP_OK, 2000);
-    printf("ESP8266: IP rsp=[%s]\r\n", ip_rsp);
+    if (ESP8266_UDP_VERBOSE_LOG) printf("ESP8266: IP rsp=[%s]\r\n", ip_rsp);
 
     ESP8266_AT_SendCmd(ESP8266_AT_CMD_NORMAL_MODE, ESP8266_AT_RSP_OK, 1000);
     ESP8266_AT_SendCmd(ESP8266_AT_CMD_SINGLE_CONN, ESP8266_AT_RSP_OK, 1000);
     ESP8266_AT_SendCmd(ESP8266_AT_CMD_IPDINFO_ON, ESP8266_AT_RSP_OK, 1000);
     ESP8266_AT_SendCmd(ESP8266_AT_CMD_CLOSE, ESP8266_AT_RSP_OK, 1000);
 
-    printf("ESP8266: UDP local=%u peer_port=%u\r\n",
-           ESP8266_UDP_PORT, ESP32S3_RX_PORT);
+    if (ESP8266_UDP_VERBOSE_LOG)
+    {
+        printf("ESP8266: UDP local=%u peer_port=%u\r\n",
+               ESP8266_UDP_PORT, ESP32S3_RX_PORT);
+    }
     if (ESP8266_AT_StartUdp("255.255.255.255",
                             ESP32S3_RX_PORT,
                             ESP8266_UDP_PORT) != 0)
     {
-        printf("ESP8266: UDP start failed\r\n");
+        if (ESP8266_UDP_VERBOSE_LOG) printf("ESP8266: UDP start failed\r\n");
         return 1;
     }
 
-    printf("ESP8266: UDP started, wait ESP32-S3 packet\r\n");
+    if (ESP8266_UDP_VERBOSE_LOG) printf("ESP8266: UDP started, wait ESP32-S3 packet\r\n");
     return 0;
 }
 
@@ -140,7 +145,7 @@ uint8_t ESP8266_UDP_PollReceive(ESP32S3_Data_t *data, uint32_t timeout_ms)
 
     if (g_esp32s3_ip[0] != '\0')
     {
-        printf("ESP8266: peer %s:%u\r\n", g_esp32s3_ip, g_esp32s3_src_port);
+        if (ESP8266_UDP_VERBOSE_LOG) printf("ESP8266: peer %s:%u\r\n", g_esp32s3_ip, g_esp32s3_src_port);
     }
 
     root = cJSON_Parse(payload);

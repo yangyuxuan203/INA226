@@ -324,7 +324,7 @@ wifi_ok:
     ESP8266_SendCmd("AT+CIPCLOSE\r\n", "OK", 2000);
 
     UsartPrintf(USART1, "5. Connect MQTT\r\n");
-    while(ESP8266_SendCmd("AT+CIPSTART=\"TCP\",\"bemfa.com\",9501\r\n", "CONNECT", 10000))
+    while(ESP8266_SendCmd("AT+CIPSTART=\"TCP\",\"mqtts.heclouds.com\",1883\r\n", "CONNECT", 10000))
         DelayXms(1000);
 
     UsartPrintf(USART1, "=== ESP8266 Init OK ===\r\n");

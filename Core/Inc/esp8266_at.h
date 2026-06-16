@@ -39,13 +39,16 @@ uint16_t ESP8266_AT_ReadUntil(char *buf, uint16_t len, const char *expect, uint3
 uint8_t ESP8266_AT_SendCmd(const char *cmd, const char *expect, uint32_t timeout_ms);
 uint8_t ESP8266_AT_JoinAp(const char *ssid, const char *password);
 uint8_t ESP8266_AT_StartUdp(const char *remote_ip, uint16_t remote_port, uint16_t local_port);
+uint8_t ESP8266_AT_StartTcp(const char *host, uint16_t port);
 uint8_t ESP8266_AT_SendData(const uint8_t *data, uint16_t len);
 uint8_t ESP8266_AT_SendDataTo(const uint8_t *data, uint16_t len, const char *remote_ip, uint16_t remote_port);
+uint8_t ESP8266_AT_WaitTcpPacket(uint8_t *payload, uint16_t len, uint16_t *out_len, uint32_t timeout_ms);
 uint8_t ESP8266_AT_WaitUdpPayload(char *payload, uint16_t len, uint32_t timeout_ms);
 uint8_t ESP8266_AT_WaitUdpPayloadFrom(char *payload, uint16_t payload_len,
                                       char *remote_ip, uint16_t remote_ip_len,
                                       uint16_t *remote_port,
                                       uint32_t timeout_ms);
+uint8_t ESP8266_AT_GetSntpTime(char *buf, uint16_t len);
 
 #ifdef __cplusplus
 }

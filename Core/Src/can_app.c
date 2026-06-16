@@ -13,6 +13,8 @@
 #include "usart.h"
 #include <stdio.h>
 
+#define CAN_APP_VERBOSE_LOG 0U
+
 QueueHandle_t xCanRxQueue;
 
 /* Received battery data from STM32F1 */
@@ -43,15 +45,15 @@ void CAN_App_Init(void)
     g_can_filter.FilterActivation     = ENABLE;
 
     ret = HAL_CAN_ConfigFilter(&hcan1, &g_can_filter);
-    printf("CAN ConfigFilter: %d\r\n", ret);
+    if (CAN_APP_VERBOSE_LOG) printf("CAN ConfigFilter: %d\r\n", ret);
 
     ret = HAL_CAN_Start(&hcan1);
-    printf("CAN Start: %d\r\n", ret);
+    if (CAN_APP_VERBOSE_LOG) printf("CAN Start: %d\r\n", ret);
 
     ret = HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
-    printf("CAN ActivateNotification: %d\r\n", ret);
+    if (CAN_APP_VERBOSE_LOG) printf("CAN ActivateNotification: %d\r\n", ret);
 
-    printf("CAN State: %d\r\n", HAL_CAN_GetState(&hcan1));
+    if (CAN_APP_VERBOSE_LOG) printf("CAN State: %d\r\n", HAL_CAN_GetState(&hcan1));
 }
 
 /**

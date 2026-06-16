@@ -2,6 +2,8 @@
 #include "delay.h"
 #include <stdio.h>
 
+#define INA226_PV_VERBOSE_LOG 0U
+
 /* Debug: print raw register values on first few reads */
 static uint8_t pv_dbg_cnt = 3;
 
@@ -155,24 +157,27 @@ static uint8_t INA226_PV_WriteReg(uint8_t reg, uint16_t data)
     return 0;
 }
 
-static uint16_t INA226_PV_ReadReg(uint8_t reg)
+static uint8_t INA226_PV_ReadReg(uint8_t reg, uint16_t *data)
 {
-    uint16_t data;
+    uint16_t value;
+
+    if (data == NULL) return 1;
 
     INA226_PV_IIC_Start();
     INA226_PV_IIC_WriteByte((INA226_PV_ADDR << 1) | 0);
-    if (INA226_PV_IIC_WaitAck()) return 0;
+    if (INA226_PV_IIC_WaitAck()) return 1;
     INA226_PV_IIC_WriteByte(reg);
-    if (INA226_PV_IIC_WaitAck()) return 0;
+    if (INA226_PV_IIC_WaitAck()) return 1;
 
     INA226_PV_IIC_Start();
     INA226_PV_IIC_WriteByte((INA226_PV_ADDR << 1) | 1);
-    if (INA226_PV_IIC_WaitAck()) return 0;
+    if (INA226_PV_IIC_WaitAck()) return 1;
 
-    data = INA226_PV_IIC_ReadByte(1);
-    data = (data << 8) | INA226_PV_IIC_ReadByte(0);
+    value = INA226_PV_IIC_ReadByte(1);
+    value = (value << 8) | INA226_PV_IIC_ReadByte(0);
     INA226_PV_IIC_Stop();
-    return data;
+    *data = value;
+    return 0;
 }
 
 /* Public Functions */
@@ -187,36 +192,37 @@ void INA226_PV_Init(void)
 
     /* Reset the device */
     ret = INA226_PV_WriteReg(INA226_REG_CONFIG, INA226_CONFIG_RESET);
-    printf("INA226_PV: reset ret=%d\r\n", ret);
+    if (INA226_PV_VERBOSE_LOG) printf("INA226_PV: reset ret=%d\r\n", ret);
     delay_ms(10);
 
     /* Config: 16 samples avg, 1.1ms conversion, continuous */
     ret = INA226_PV_WriteReg(INA226_REG_CONFIG, 0x0927);
-    printf("INA226_PV: cfg write ret=%d\r\n", ret);
+    if (INA226_PV_VERBOSE_LOG) printf("INA226_PV: cfg write ret=%d\r\n", ret);
     delay_ms(10);
 
     /* Read back config to verify */
-    cfg = INA226_PV_ReadReg(INA226_REG_CONFIG);
-    printf("INA226_PV: cfg readback=0x%04X (expect 0x0927)\r\n", cfg);
+    if (INA226_PV_ReadReg(INA226_REG_CONFIG, &cfg) != 0) cfg = 0;
+    if (INA226_PV_VERBOSE_LOG) printf("INA226_PV: cfg readback=0x%04X (expect 0x0927)\r\n", cfg);
 
-    if (cfg != 0x0927) {
-        printf("INA226_PV: CONFIG MISMATCH! Retrying...\r\n");
+    if ((cfg & (uint16_t)~0x4000U) != 0x0927) {
+        if (INA226_PV_VERBOSE_LOG) printf("INA226_PV: CONFIG MISMATCH! Retrying...\r\n");
         INA226_PV_WriteReg(INA226_REG_CONFIG, 0x0927);
         delay_ms(10);
-        cfg = INA226_PV_ReadReg(INA226_REG_CONFIG);
-        printf("INA226_PV: cfg retry=0x%04X\r\n", cfg);
+        if (INA226_PV_ReadReg(INA226_REG_CONFIG, &cfg) != 0) cfg = 0;
+        if (INA226_PV_VERBOSE_LOG) printf("INA226_PV: cfg retry=0x%04X\r\n", cfg);
     }
 
     /* Calibration */
     ret = INA226_PV_WriteReg(INA226_REG_CALIBRATION, 0x0066);
-    printf("INA226_PV: cal write ret=%d\r\n", ret);
+    if (INA226_PV_VERBOSE_LOG) printf("INA226_PV: cal write ret=%d\r\n", ret);
     delay_ms(10);
 
     /* Final register dump */
-    uint16_t cal = INA226_PV_ReadReg(INA226_REG_CALIBRATION);
-    uint16_t mfr = INA226_PV_ReadReg(INA226_REG_MANUFACTURER);
-    uint16_t die = INA226_PV_ReadReg(INA226_REG_DIE_ID);
-    printf("INA226_PV: cfg=0x%04X cal=0x%04X mfr=0x%04X die=0x%04X\r\n", cfg, cal, mfr, die);
+    uint16_t cal = 0, mfr = 0, die = 0;
+    INA226_PV_ReadReg(INA226_REG_CALIBRATION, &cal);
+    INA226_PV_ReadReg(INA226_REG_MANUFACTURER, &mfr);
+    INA226_PV_ReadReg(INA226_REG_DIE_ID, &die);
+    if (INA226_PV_VERBOSE_LOG) printf("INA226_PV: cfg=0x%04X cal=0x%04X mfr=0x%04X die=0x%04X\r\n", cfg, cal, mfr, die);
 }
 
 /*
@@ -255,18 +261,18 @@ uint8_t INA226_PV_ReadData(INA226_Data *data)
         INA226_PV_WriteReg(INA226_REG_CALIBRATION, 0x0066);
     }
 
-    raw_v  = INA226_PV_ReadReg(INA226_REG_BUS_VOLT);
-    raw_sv = INA226_PV_ReadReg(INA226_REG_SHUNT_VOLT);
-    raw_c  = INA226_PV_ReadReg(INA226_REG_CURRENT);
-    raw_p  = INA226_PV_ReadReg(INA226_REG_POWER);
-    cfg    = INA226_PV_ReadReg(INA226_REG_CONFIG);
+    if (INA226_PV_ReadReg(INA226_REG_BUS_VOLT, &raw_v) != 0) return 1;
+    if (INA226_PV_ReadReg(INA226_REG_SHUNT_VOLT, &raw_sv) != 0) return 1;
+    if (INA226_PV_ReadReg(INA226_REG_CURRENT, &raw_c) != 0) return 1;
+    if (INA226_PV_ReadReg(INA226_REG_POWER, &raw_p) != 0) return 1;
+    if (INA226_PV_ReadReg(INA226_REG_CONFIG, &cfg) != 0) return 1;
 
     data->bus_voltage   = raw_v * INA226_BUS_VOLT_LSB;
     data->shunt_voltage = (int16_t)raw_sv * INA226_SHUNT_VOLT_LSB;
     data->current       = (int16_t)raw_c * INA226_PV_CURRENT_LSB;
     data->power         = raw_p * INA226_PV_POWER_LSB;
 
-    if (pv_dbg_cnt > 0) {
+    if (INA226_PV_VERBOSE_LOG && pv_dbg_cnt > 0) {
         pv_dbg_cnt--;
         printf("PV: cfg=0x%04X bus=%u shunt=%d cur=%d pwr=%u V=%.3f\r\n",
                cfg, raw_v, (int16_t)raw_sv, (int16_t)raw_c, raw_p,

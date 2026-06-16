@@ -5,6 +5,8 @@ set(User_Include_Dirs
     ${CMAKE_CURRENT_SOURCE_DIR}/../../LCD
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Inc
     ${CMAKE_CURRENT_SOURCE_DIR}/../../CJSON
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../MQTT
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../onenet/inc
 )
 
 # User sources
@@ -13,6 +15,11 @@ set(User_Sources
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/ina226_3.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/esp8266_at.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/esp8266_udp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/esp8266_onenet_at.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/esp8266_onenet.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../MQTT/MqttKit.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../onenet/src/base64.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../onenet/src/hmac_sha1.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../CJSON/cJSON.c
 )
 

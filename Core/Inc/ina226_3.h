@@ -6,11 +6,11 @@
 /* INA226 #3 I2C Address (A0=0, A1=1 → 0x44) */
 #define INA226_3_ADDR           0x41
 
-/* Software I2C Pin Definitions (PB3=SCL, PB2=SDA) */
-#define INA226_3_SCL_PORT       GPIOB
-#define INA226_3_SCL_PIN        GPIO_PIN_3
-#define INA226_3_SDA_PORT       GPIOB
-#define INA226_3_SDA_PIN        GPIO_PIN_2
+/* Software I2C Pin Definitions (PC11=SCL, PC12=SDA) */
+#define INA226_3_SCL_PORT       GPIOC
+#define INA226_3_SCL_PIN        GPIO_PIN_11
+#define INA226_3_SDA_PORT       GPIOC
+#define INA226_3_SDA_PIN        GPIO_PIN_12
 
 /* IO Operations */
 #define INA226_3_SCL_HIGH()     HAL_GPIO_WritePin(INA226_3_SCL_PORT, INA226_3_SCL_PIN, GPIO_PIN_SET)

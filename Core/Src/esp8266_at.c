@@ -1,10 +1,12 @@
 #include "esp8266_at.h"
 #include "usart.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define ESP8266_AT_DMA_RX_SIZE 512
 #define ESP8266_AT_RSP_SIZE    256
+#define ESP8266_AT_VERBOSE_LOG 1U
 
 static uint8_t g_esp8266_dma_rx[ESP8266_AT_DMA_RX_SIZE];
 static uint16_t g_esp8266_dma_old_pos = 0;
@@ -160,7 +162,7 @@ uint8_t ESP8266_AT_SendCmd(const char *cmd, const char *expect, uint32_t timeout
         return 0;
     }
 
-    printf("ESP8266 AT fail cmd=[%s] rsp=[%s]\r\n", cmd, rx);
+    if (ESP8266_AT_VERBOSE_LOG) printf("ESP8266 AT fail cmd=[%s] rsp=[%s]\r\n", cmd, rx);
     return 1;
 }
 
@@ -180,14 +182,14 @@ uint8_t ESP8266_AT_JoinAp(const char *ssid, const char *password)
     for (retry = 0; retry < 3; retry++)
     {
         ESP8266_AT_ClearRx();
-        printf("ESP8266: CWJAP try %u\r\n", retry + 1);
+        if (ESP8266_AT_VERBOSE_LOG) printf("ESP8266: CWJAP try %u\r\n", retry + 1);
         if (ESP8266_AT_SendRaw(cmd) != 0 || ESP8266_AT_SendRaw("\r\n") != 0)
         {
             continue;
         }
 
         ESP8266_AT_ReadUntil(rx, sizeof(rx), ESP8266_AT_RSP_OK, 20000);
-        printf("ESP8266: CWJAP rsp=[%s]\r\n", rx);
+        if (ESP8266_AT_VERBOSE_LOG) printf("ESP8266: CWJAP rsp=[%s]\r\n", rx);
 
         if (strstr(rx, ESP8266_AT_RSP_GOT_IP) != NULL ||
             strstr(rx, ESP8266_AT_RSP_WIFI_CONNECTED) != NULL ||
@@ -219,6 +221,24 @@ uint8_t ESP8266_AT_StartUdp(const char *remote_ip, uint16_t remote_port, uint16_
     }
 
     return ESP8266_AT_SendCmd(cmd, ESP8266_AT_RSP_CONNECT, 3000);
+}
+
+uint8_t ESP8266_AT_StartTcp(const char *host, uint16_t port)
+{
+    char cmd[128];
+
+    if (host == NULL)
+    {
+        return 1;
+    }
+
+    snprintf(cmd, sizeof(cmd), "AT+CIPSTART=\"TCP\",\"%s\",%u", host, port);
+    if (ESP8266_AT_SendCmd(cmd, ESP8266_AT_RSP_OK, 5000) == 0)
+    {
+        return 0;
+    }
+
+    return ESP8266_AT_SendCmd(cmd, ESP8266_AT_RSP_CONNECT, 5000);
 }
 
 uint8_t ESP8266_AT_SendDataTo(const uint8_t *data, uint16_t len, const char *remote_ip, uint16_t remote_port)
@@ -265,6 +285,96 @@ uint8_t ESP8266_AT_SendDataTo(const uint8_t *data, uint16_t len, const char *rem
 uint8_t ESP8266_AT_SendData(const uint8_t *data, uint16_t len)
 {
     return ESP8266_AT_SendDataTo(data, len, NULL, 0);
+}
+
+uint8_t ESP8266_AT_WaitTcpPacket(uint8_t *payload, uint16_t len, uint16_t *out_len, uint32_t timeout_ms)
+{
+    uint32_t start = HAL_GetTick();
+    char header[48];
+    uint16_t hpos = 0;
+    uint16_t packet_len = 0;
+    uint16_t i;
+    int16_t ch;
+    char *colon;
+    char *ipd;
+    char *len_ptr;
+
+    if (payload == NULL || len == 0 || out_len == NULL)
+    {
+        return 1;
+    }
+
+    *out_len = 0;
+
+    while ((HAL_GetTick() - start) < timeout_ms)
+    {
+        ch = ESP8266_AT_ReadDmaByte();
+        if (ch < 0)
+        {
+            HAL_Delay(1);
+            continue;
+        }
+
+        if (hpos < (sizeof(header) - 1))
+        {
+            header[hpos++] = (char)ch;
+            header[hpos] = '\0';
+        }
+        else
+        {
+            memmove(header, &header[1], sizeof(header) - 2);
+            header[sizeof(header) - 2] = (char)ch;
+            header[sizeof(header) - 1] = '\0';
+        }
+
+        colon = strchr(header, ':');
+        if (colon == NULL || strstr(header, "+IPD,") == NULL)
+        {
+            continue;
+        }
+
+        ipd = strstr(header, "+IPD,");
+        if (ipd == NULL)
+        {
+            continue;
+        }
+
+        len_ptr = ipd + strlen("+IPD,");
+        if (*len_ptr < '0' || *len_ptr > '9')
+        {
+            return 1;
+        }
+
+        packet_len = (uint16_t)atoi(len_ptr);
+        if (packet_len == 0)
+        {
+            return 1;
+        }
+        if (packet_len >= len)
+        {
+            packet_len = len - 1;
+        }
+
+        for (i = 0; i < packet_len; )
+        {
+            if ((HAL_GetTick() - start) >= timeout_ms)
+            {
+                return 1;
+            }
+            ch = ESP8266_AT_ReadDmaByte();
+            if (ch < 0)
+            {
+                HAL_Delay(1);
+                continue;
+            }
+            payload[i++] = (uint8_t)ch;
+        }
+
+        *out_len = packet_len;
+        return 0;
+    }
+
+    return 1;
 }
 
 static uint8_t ESP8266_AT_ParseRemote(const char *rx, char *remote_ip,
@@ -360,5 +470,49 @@ uint8_t ESP8266_AT_WaitUdpPayloadFrom(char *payload, uint16_t len,
 
     memcpy(payload, start, payload_len);
     payload[payload_len] = '\0';
+    return 0;
+}
+
+uint8_t ESP8266_AT_GetSntpTime(char *buf, uint16_t len)
+{
+    char rx[256];
+    char *p;
+    char *e;
+    uint16_t copy_len;
+
+    if (buf == NULL || len == 0)
+    {
+        return 1;
+    }
+    buf[0] = '\0';
+
+    ESP8266_AT_SendCmd("AT+CIPSNTPCFG=1,8,\"ntp.aliyun.com\",\"cn.ntp.org.cn\"", ESP8266_AT_RSP_OK, 2000);
+    ESP8266_AT_ClearRx();
+    if (ESP8266_AT_SendRaw("AT+CIPSNTPTIME?\r\n") != 0)
+    {
+        return 1;
+    }
+    ESP8266_AT_ReadUntil(rx, sizeof(rx), ESP8266_AT_RSP_OK, 3000);
+
+    p = strstr(rx, "+CIPSNTPTIME:");
+    if (p == NULL)
+    {
+        return 1;
+    }
+    p += strlen("+CIPSNTPTIME:");
+    while (*p == ' ') p++;
+    e = strpbrk(p, "\r\n");
+    if (e == NULL)
+    {
+        e = p + strlen(p);
+    }
+
+    copy_len = (uint16_t)(e - p);
+    if (copy_len >= len)
+    {
+        copy_len = len - 1;
+    }
+    memcpy(buf, p, copy_len);
+    buf[copy_len] = '\0';
     return 0;
 }

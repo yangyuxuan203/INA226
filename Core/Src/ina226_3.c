@@ -2,13 +2,17 @@
 #include "delay.h"
 #include <stdio.h>
 
-/* Software I2C low-level functions for INA226 #3 (PB3=SCL, PB2=SDA) */
+#define INA226_3_VERBOSE_LOG 0U
+
+/* Software I2C low-level functions for INA226 #3 (PC11=SCL, PC12=SDA) */
+
+static uint8_t s_ina226_3_addr = INA226_3_ADDR;
 
 static void INA226_3_IIC_Init(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
 
     GPIO_InitStruct.Pin = INA226_3_SCL_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
@@ -119,10 +123,22 @@ static uint8_t INA226_3_IIC_ReadByte(uint8_t ack)
     return receive;
 }
 
+static uint8_t INA226_3_ProbeAddr(uint8_t addr)
+{
+    uint8_t failed;
+
+    INA226_3_IIC_Start();
+    INA226_3_IIC_WriteByte((addr << 1) | 0);
+    failed = INA226_3_IIC_WaitAck();
+    INA226_3_IIC_Stop();
+
+    return failed ? 1U : 0U;
+}
+
 static uint8_t INA226_3_WriteReg(uint8_t reg, uint16_t data)
 {
     INA226_3_IIC_Start();
-    INA226_3_IIC_WriteByte((INA226_3_ADDR << 1) | 0);
+    INA226_3_IIC_WriteByte((s_ina226_3_addr << 1) | 0);
     if (INA226_3_IIC_WaitAck()) return 1;
     INA226_3_IIC_WriteByte(reg);
     if (INA226_3_IIC_WaitAck()) return 1;
@@ -134,39 +150,69 @@ static uint8_t INA226_3_WriteReg(uint8_t reg, uint16_t data)
     return 0;
 }
 
-static uint16_t INA226_3_ReadReg(uint8_t reg)
+static uint8_t INA226_3_ReadReg(uint8_t reg, uint16_t *data)
 {
-    uint16_t data;
+    uint16_t value;
+
+    if (data == NULL) return 1;
+
     INA226_3_IIC_Start();
-    INA226_3_IIC_WriteByte((INA226_3_ADDR << 1) | 0);
-    if (INA226_3_IIC_WaitAck()) return 0;
+    INA226_3_IIC_WriteByte((s_ina226_3_addr << 1) | 0);
+    if (INA226_3_IIC_WaitAck()) return 1;
     INA226_3_IIC_WriteByte(reg);
-    if (INA226_3_IIC_WaitAck()) return 0;
+    if (INA226_3_IIC_WaitAck()) return 1;
     INA226_3_IIC_Start();
-    INA226_3_IIC_WriteByte((INA226_3_ADDR << 1) | 1);
-    if (INA226_3_IIC_WaitAck()) return 0;
-    data = INA226_3_IIC_ReadByte(1);
-    data = (data << 8) | INA226_3_IIC_ReadByte(0);
+    INA226_3_IIC_WriteByte((s_ina226_3_addr << 1) | 1);
+    if (INA226_3_IIC_WaitAck()) return 1;
+    value = INA226_3_IIC_ReadByte(1);
+    value = (value << 8) | INA226_3_IIC_ReadByte(0);
     INA226_3_IIC_Stop();
-    return data;
+    *data = value;
+    return 0;
 }
 
 void INA226_3_Init(void)
 {
+    uint8_t init_failed = 0;
+
     INA226_3_IIC_Init();
     delay_ms(10);
-    INA226_3_WriteReg(INA226_REG_CONFIG, INA226_CONFIG_RESET);
+    init_failed |= INA226_3_WriteReg(INA226_REG_CONFIG, INA226_CONFIG_RESET);
     delay_ms(10);
-    INA226_3_WriteReg(INA226_REG_CONFIG, 0x0927);
+    init_failed |= INA226_3_WriteReg(INA226_REG_CONFIG, 0x0927);
     delay_ms(10);
-    INA226_3_WriteReg(INA226_REG_CALIBRATION, 0x0066);
+    init_failed |= INA226_3_WriteReg(INA226_REG_CALIBRATION, 0x00CC);
     delay_ms(10);
-    printf("INA226_3: init done (PB3=SCL, PB2=SDA, addr=0x%02X)\r\n", INA226_3_ADDR);
+
+    if (init_failed)
+    {
+        for (uint8_t addr = 0x40; addr <= 0x4F; addr++)
+        {
+            if (INA226_3_ProbeAddr(addr) == 0)
+            {
+                s_ina226_3_addr = addr;
+                init_failed = 0;
+                init_failed |= INA226_3_WriteReg(INA226_REG_CONFIG, INA226_CONFIG_RESET);
+                delay_ms(10);
+                init_failed |= INA226_3_WriteReg(INA226_REG_CONFIG, 0x0927);
+                delay_ms(10);
+                init_failed |= INA226_3_WriteReg(INA226_REG_CALIBRATION, 0x00CC);
+                delay_ms(10);
+                break;
+            }
+        }
+    }
+
+    if (INA226_3_VERBOSE_LOG)
+    {
+        printf("INA226_3: init %s (PC11=SCL, PC12=SDA, addr=0x%02X)\r\n",
+               init_failed ? "failed" : "done", s_ina226_3_addr);
+    }
 }
 
 /*
- * INA226 #3 calibration (R_shunt = 0.2 ohm, Cal = 0x0066 = 102):
- *   Current_LSB = 0.00512 / (102 * 0.2) = 0.000251A = 251uA/bit
+ * INA226 #3 calibration (R_shunt = 0.1 ohm, Cal = 0x00CC = 204):
+ *   Current_LSB = 0.00512 / (204 * 0.1) = 0.000251A = 251uA/bit
  *   Power_LSB = 25 * Current_LSB = 0.006275W = 6.275mW/bit
  */
 #define INA226_3_CURRENT_LSB    0.000251f   /* A/bit */
@@ -174,12 +220,22 @@ void INA226_3_Init(void)
 
 uint8_t INA226_3_ReadData(INA226_Data *data)
 {
+    uint16_t raw_bus;
+    uint16_t raw_shunt;
+    uint16_t raw_current;
+    uint16_t raw_power;
+
     if (data == NULL) return 1;
 
-    data->bus_voltage = INA226_3_ReadReg(INA226_REG_BUS_VOLT) * INA226_BUS_VOLT_LSB;
-    data->shunt_voltage = (int16_t)INA226_3_ReadReg(INA226_REG_SHUNT_VOLT) * INA226_SHUNT_VOLT_LSB;
-    data->current = (int16_t)INA226_3_ReadReg(INA226_REG_CURRENT) * INA226_3_CURRENT_LSB;
-    data->power = INA226_3_ReadReg(INA226_REG_POWER) * INA226_3_POWER_LSB;
+    if (INA226_3_ReadReg(INA226_REG_BUS_VOLT, &raw_bus) != 0) return 1;
+    if (INA226_3_ReadReg(INA226_REG_SHUNT_VOLT, &raw_shunt) != 0) return 1;
+    if (INA226_3_ReadReg(INA226_REG_CURRENT, &raw_current) != 0) return 1;
+    if (INA226_3_ReadReg(INA226_REG_POWER, &raw_power) != 0) return 1;
+
+    data->bus_voltage = raw_bus * INA226_BUS_VOLT_LSB;
+    data->shunt_voltage = (int16_t)raw_shunt * INA226_SHUNT_VOLT_LSB;
+    data->current = (int16_t)raw_current * INA226_3_CURRENT_LSB;
+    data->power = raw_power * INA226_3_POWER_LSB;
 
     return 0;
 }
