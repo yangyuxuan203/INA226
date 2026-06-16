@@ -565,19 +565,19 @@ void Relay_Control(float pv_power_w, float home_load_power_w,
             HAL_GPIO_ReadPin(MOS_LED_PORT, MOS_LED_PIN) == GPIO_PIN_SET ? 1U : 0U;
         led_manual_override = 1;
         led_manual_on = led_now ? 0U : 1U;
-        if (SERIAL_VERBOSE_LOG) printf("KEY2 LED request=%d\r\n", led_manual_on);
+        // if (SERIAL_VERBOSE_LOG) printf("KEY2 LED request=%d\r\n", led_manual_on);
     }
     if (Key_GetPressedEvent(&fan_key_fsm, fan_key, now_tick))
     {
         fan_user_req = !fan_user_req;
         fan_local_override_tick = now_tick;
-        if (SERIAL_VERBOSE_LOG) printf("KEY1 FAN request=%d\r\n", fan_user_req);
+        // if (SERIAL_VERBOSE_LOG) printf("KEY1 FAN request=%d\r\n", fan_user_req);
     }
     if (Key_GetPressedEvent(&qi_key_fsm, qi_key, now_tick))
     {
         qi_user_req = qi_active ? 0U : 1U;
         if (qi_active) qi_active = 0;
-        if (SERIAL_VERBOSE_LOG) printf("KEY0 QI request=%d\r\n", qi_user_req);
+        // if (SERIAL_VERBOSE_LOG) printf("KEY0 QI request=%d\r\n", qi_user_req);
     }
 
     /*
@@ -662,8 +662,8 @@ void Relay_Control(float pv_power_w, float home_load_power_w,
     Mos_Write(MOS_FAN_PORT, MOS_FAN_PIN, fan_out);
     if (fan_out != prev_fan_out)
     {
-        printf("FAN: req=%u out=%u src=%u low=%u key=%u\r\n",
-               fan_user_req, fan_out, home_source_available, low_energy_mode, fan_key);
+        // printf("FAN: req=%u out=%u src=%u low=%u key=%u\r\n",
+        //        fan_user_req, fan_out, home_source_available, low_energy_mode, fan_key);
         prev_fan_out = fan_out;
     }
 
@@ -743,7 +743,7 @@ void StartDefaultTask(void const * argument)
   /* Wait for power rail stable before I2C */
   osDelay(500);
   INA226_Init();
-  if (SERIAL_VERBOSE_LOG) printf("INA226 initialized (PB6=SCL, PB7=SDA)\r\n");
+  // if (SERIAL_VERBOSE_LOG) printf("INA226 initialized (PB6=SCL, PB7=SDA)\r\n");
 
   uint8_t init_skip = 3;  /* skip first few readings for sensor stabilize */
 
@@ -754,7 +754,7 @@ void StartDefaultTask(void const * argument)
       /* Skip first few readings to let sensor stabilize */
       if (init_skip > 0) {
           init_skip--;
-          if (SERIAL_VERBOSE_LOG) printf("INA226: skipping initial read V=%.3f\r\n", (double)ina_data.bus_voltage);
+          // if (SERIAL_VERBOSE_LOG) printf("INA226: skipping initial read V=%.3f\r\n", (double)ina_data.bus_voltage);
           osDelay(200);
           continue;
       }
@@ -831,12 +831,12 @@ void StartDefaultTask(void const * argument)
       else if (last_cal_voltage > 0.0f &&
                fabsf(avg_v - last_cal_voltage) > 0.05f) {
           soc_coulomb_mah = voltage_soc_mah;
-          if (SERIAL_VERBOSE_LOG)
-          {
-              printf("SOC recal: V %.3f->%.3fV, SOC=%d%%\r\n",
-                     (double)last_cal_voltage, (double)avg_v,
-                     SOC_VoltageToPercent(avg_v));
-          }
+          // if (SERIAL_VERBOSE_LOG)
+          // {
+          //     printf("SOC recal: V %.3f->%.3fV, SOC=%d%%\r\n",
+          //            (double)last_cal_voltage, (double)avg_v,
+          //            SOC_VoltageToPercent(avg_v));
+          // }
       }
       last_cal_voltage = avg_v;
 
@@ -1833,11 +1833,11 @@ static void OneNET_UpdateBeijingTimeBeforeMqtt(void)
     strncpy(g_beijing_time, time_text, sizeof(g_beijing_time) - 1U);
     g_beijing_time[sizeof(g_beijing_time) - 1U] = '\0';
     osMutexRelease(g_mutex);
-    printf("ONENET: SNTP %s\r\n", time_text);
+    // printf("ONENET: SNTP %s\r\n", time_text);
   }
   else
   {
-    printf("ONENET: SNTP failed before MQTT\r\n");
+    // printf("ONENET: SNTP failed before MQTT\r\n");
   }
 }
 
@@ -1883,12 +1883,12 @@ void StartTask06(void const * argument)
       g_esp32s3_data = rx;
       g_esp32s3_updated = 1;
       osMutexRelease(g_mutex);
-      if (SERIAL_VERBOSE_LOG)
-      {
-        printf("ESP32S3: bat=%.3fV %.1f%% hr=%u spo2=%u state=%u\r\n",
-               (double)rx.bat_v, (double)rx.bat_pct,
-               rx.hr, rx.spo2, rx.state);
-      }
+      // if (SERIAL_VERBOSE_LOG)
+      // {
+      //   printf("ESP32S3: bat=%.3fV %.1f%% hr=%u spo2=%u state=%u\r\n",
+      //          (double)rx.bat_v, (double)rx.bat_pct,
+      //          rx.hr, rx.spo2, rx.state);
+      // }
     }
 
     osDelay(20);
@@ -1925,7 +1925,7 @@ void StartTask07(void const * argument)
     if (!mqtt_ok)
     {
       g_onenet_online = 0;
-      printf("ONENET: init USART2 cloud link\r\n");
+      // printf("ONENET: init USART2 cloud link\r\n");
       if (ESP8266_ONENET_AT_InitWiFi() == 0)
       {
         /* Get SNTP while no MQTT TCP connection is open. Some ESP8266 AT
@@ -1935,7 +1935,7 @@ void StartTask07(void const * argument)
       }
       else
       {
-        printf("ONENET: WiFi init failed on USART2\r\n");
+        // printf("ONENET: WiFi init failed on USART2\r\n");
         osDelay(5000);
         continue;
       }
@@ -1955,11 +1955,11 @@ void StartTask07(void const * argument)
         prev_qi_on = 0xFFU;
         pending_switch_ack = 1U;
         publish_fail_count = 0;
-        printf("ONENET: mqtt online on USART2\r\n");
+        // printf("ONENET: mqtt online on USART2\r\n");
       }
       else
       {
-        printf("ONENET: mqtt setup failed on USART2\r\n");
+        // printf("ONENET: mqtt setup failed on USART2\r\n");
         ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_CLOSE, ESP8266_AT_RSP_OK, 1000);
         osDelay(5000);
         continue;
@@ -2110,16 +2110,18 @@ void MX_FREERTOS_Init(void)
   osThreadCreate(osThread(lcd), NULL);
 
   osThreadDef(esp8266, StartTask06, osPriorityBelowNormal, 0, 1024);
-  if (osThreadCreate(osThread(esp8266), NULL) == NULL)
-  {
-    if (SERIAL_VERBOSE_LOG) printf("ESP8266 task create failed\r\n");
-  }
+  osThreadCreate(osThread(esp8266), NULL);
+  // if (osThreadCreate(osThread(esp8266), NULL) == NULL)
+  // {
+  //   if (SERIAL_VERBOSE_LOG) printf("ESP8266 task create failed\r\n");
+  // }
 
   osThreadDef(onenet, StartTask07, osPriorityBelowNormal, 0, 1024);
-  if (osThreadCreate(osThread(onenet), NULL) == NULL)
-  {
-    if (SERIAL_VERBOSE_LOG) printf("OneNET task create failed\r\n");
-  }
+  osThreadCreate(osThread(onenet), NULL);
+  // if (osThreadCreate(osThread(onenet), NULL) == NULL)
+  // {
+  //   if (SERIAL_VERBOSE_LOG) printf("OneNET task create failed\r\n");
+  // }
 }
 
 /* USER CODE END Application */

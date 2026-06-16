@@ -425,16 +425,19 @@ static uint8_t OneNET_PublishPropertyPayload(const char *payload)
     memcpy(&pkt._data[pkt._len], payload, body_len);
     pkt._len += body_len;
 
-    if (ONENET_VERBOSE_LOG)
-    {
-        printf("ONENET JSON len=%u: %s\r\n", body_len, payload);
-    }
+    // if (ONENET_VERBOSE_LOG)
+    // {
+    //     printf("ONENET JSON len=%u: %s\r\n", body_len, payload);
+    // }
 
     uint8_t send_ret = OneNET_SendMqttPacket(&pkt);
-    if (ONENET_VERBOSE_LOG)
-    {
-        printf("ONENET JSON send ret=%u\r\n", send_ret);
-    }
+
+
+    
+    // if (ONENET_VERBOSE_LOG)
+    // {
+    //     printf("ONENET JSON send ret=%u\r\n", send_ret);
+    // }
     return send_ret;
 }
 
