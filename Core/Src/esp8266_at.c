@@ -6,7 +6,7 @@
 
 #define ESP8266_AT_DMA_RX_SIZE 512
 #define ESP8266_AT_RSP_SIZE    256
-#define ESP8266_AT_VERBOSE_LOG 1U
+#define ESP8266_AT_VERBOSE_LOG 0U
 
 static uint8_t g_esp8266_dma_rx[ESP8266_AT_DMA_RX_SIZE];
 static uint16_t g_esp8266_dma_old_pos = 0;
@@ -269,6 +269,10 @@ uint8_t ESP8266_AT_SendDataTo(const uint8_t *data, uint16_t len, const char *rem
     ESP8266_AT_ReadUntil(rx, sizeof(rx), ESP8266_AT_RSP_SEND_PROMPT, 2000);
     if (strchr(rx, '>') == NULL)
     {
+        if (ESP8266_AT_VERBOSE_LOG)
+        {
+            printf("ESP8266 UDP CIPSEND no prompt cmd=[%s] rsp=[%s]\r\n", cmd, rx);
+        }
         return 1;
     }
 
@@ -279,7 +283,16 @@ uint8_t ESP8266_AT_SendDataTo(const uint8_t *data, uint16_t len, const char *rem
     }
 
     ESP8266_AT_ReadUntil(rx, sizeof(rx), ESP8266_AT_RSP_SEND_OK, 3000);
-    return strstr(rx, ESP8266_AT_RSP_SEND_OK) != NULL ? 0 : 1;
+    if (strstr(rx, ESP8266_AT_RSP_SEND_OK) != NULL)
+    {
+        return 0;
+    }
+
+    if (ESP8266_AT_VERBOSE_LOG)
+    {
+        printf("ESP8266 UDP SEND no OK cmd=[%s] rsp=[%s]\r\n", cmd, rx);
+    }
+    return 1;
 }
 
 uint8_t ESP8266_AT_SendData(const uint8_t *data, uint16_t len)
@@ -428,6 +441,24 @@ static uint8_t ESP8266_AT_ParseRemote(const char *rx, char *remote_ip,
     return 1;
 }
 
+static uint8_t ESP8266_AT_IsValidIpv4Text(const char *ip)
+{
+    unsigned int a, b, c, d;
+    char tail;
+
+    if (ip == NULL)
+    {
+        return 0;
+    }
+
+    if (sscanf(ip, "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) != 4)
+    {
+        return 0;
+    }
+
+    return (a <= 255U && b <= 255U && c <= 255U && d <= 255U) ? 1U : 0U;
+}
+
 uint8_t ESP8266_AT_WaitUdpPayload(char *payload, uint16_t len, uint32_t timeout_ms)
 {
     return ESP8266_AT_WaitUdpPayloadFrom(payload, len, NULL, 0, NULL, timeout_ms);
@@ -439,6 +470,8 @@ uint8_t ESP8266_AT_WaitUdpPayloadFrom(char *payload, uint16_t len,
                                       uint32_t timeout_ms)
 {
     char rx[ESP8266_AT_RSP_SIZE];
+    char parsed_ip[32];
+    uint16_t parsed_port = 0;
     char *start;
     char *end;
     uint16_t payload_len;
@@ -452,7 +485,14 @@ uint8_t ESP8266_AT_WaitUdpPayloadFrom(char *payload, uint16_t len,
     ESP8266_AT_ReadUntil(rx, sizeof(rx), "}", timeout_ms);
     if (remote_ip != NULL && remote_ip_len > 0 && remote_port != NULL)
     {
-        ESP8266_AT_ParseRemote(rx, remote_ip, remote_ip_len, remote_port);
+        parsed_ip[0] = '\0';
+        if (ESP8266_AT_ParseRemote(rx, parsed_ip, sizeof(parsed_ip), &parsed_port) == 0 &&
+            ESP8266_AT_IsValidIpv4Text(parsed_ip))
+        {
+            strncpy(remote_ip, parsed_ip, remote_ip_len - 1U);
+            remote_ip[remote_ip_len - 1U] = '\0';
+            *remote_port = parsed_port;
+        }
     }
 
     start = strchr(rx, '{');

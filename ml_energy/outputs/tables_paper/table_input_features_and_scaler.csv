@@ -1,0 +1,20 @@
+﻿index,feature,unit,x_min,x_range,deployment_source,note
+0,real_hour_sin,-,-1.0,2.0,STM32F407 UDP payload,Daily time encoded by sine to preserve periodicity.
+1,real_hour_cos,-,-1.0,2.0,STM32F407 UDP payload,Daily time encoded by cosine to preserve periodicity.
+2,lux,lux,29.200000762939453,2470.800048828125,STM32F407 UDP payload,Ambient illumination measured by the light sensor.
+3,pv_v,V,0.6600000262260437,9.586366653442383,STM32F407 UDP payload,PV bus voltage measured by INA226.
+4,pv_p,W,0.0,8.466961860656738,STM32F407 UDP payload,PV output power measured by INA226.
+5,home_v,V,2.777600049972534,5.346399307250977,STM32F407 UDP payload,Home battery voltage measured by INA226.
+6,home_soc,%,0.0,93.0999984741211,STM32F407 UDP payload,Home battery SOC recalculated from 6.5-8.4 V table.
+7,load_p,W,0.05211477726697922,2.2202892303466797,STM32F407 UDP payload,Home load power measured by INA226.
+8,car_soc,%,62.0,21.0,STM32F407 UDP payload,Vehicle battery SOC received through CAN.
+9,human_soc,%,-1.0,76.0,STM32F407 UDP payload,Wearable/human-node battery SOC received through UDP.
+10,pvsrc,0/1,0.0,1.0,STM32F407 UDP payload,PV source MOS state.
+11,hsrc,0/1,0.0,1.0,STM32F407 UDP payload,Home battery source MOS state.
+12,rigid,0/1,1.0,1.0,STM32F407 UDP payload,Rigid load switch state.
+13,led,0/1,0.0,1.0,STM32F407 UDP payload,LED load switch state.
+14,fan,0/1,0.0,1.0,STM32F407 UDP payload,Fan load switch state.
+15,qi,0/1,0.0,1.0,STM32F407 UDP payload,Qi wireless charging switch state.
+16,hchg,0/1,0.0,1.0,STM32F407 UDP payload,PV-to-home-battery charging MOS state.
+17,cchg,0/1,0.0,1.0,STM32F407 UDP payload,PV-to-car-battery charging MOS state.
+18,v2h,0/1,0.0,1.0,STM32F407 UDP payload,Vehicle-to-home request/active state.

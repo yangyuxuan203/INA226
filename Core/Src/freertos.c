@@ -105,6 +105,8 @@ volatile uint8_t g_v2h_active = 0;
 /* ESP32-S3 data received through ESP8266 UDP */
 ESP32S3_Data_t g_esp32s3_data = {0};
 volatile uint8_t g_esp32s3_updated = 0;
+EnergyLstmPrediction_t g_energy_lstm_pred = {0};
+volatile uint8_t g_energy_lstm_pred_updated = 0;
 
 /* OneNET cloud control and Beijing time */
 OneNET_Control_t g_onenet_ctrl = {-1, -1, -1, -1, 0};
@@ -143,8 +145,8 @@ void StartTask07(void const * argument);
 #define MOS_RIGID_LOAD_PIN    GPIO_PIN_1  /* PE1: home rigid load branch enable */
 #define MOS_HOME_SRC_PORT     GPIOB
 #define MOS_HOME_SRC_PIN      GPIO_PIN_14 /* PB14: home battery 5V source -> home load bus */
-#define MOS_LED_PORT          GPIOD
-#define MOS_LED_PIN           GPIO_PIN_11 /* PD11: controllable LED load */
+#define MOS_LED_PORT          GPIOC
+#define MOS_LED_PIN           GPIO_PIN_10 /* PC10: controllable LED load */
 #define MOS_FAN_PORT          GPIOD
 #define MOS_FAN_PIN           GPIO_PIN_2  /* PD2: fan load */
 #define MOS_QI_PORT           GPIOD
@@ -169,7 +171,7 @@ void StartTask07(void const * argument);
 #define MOS_CHARGE_PORT       GPIOD
 #define MOS_CHARGE_ALL_PINS   (MOS_HOME_CHARGE_PIN | MOS_CAR_CHARGE_PIN)
 
-#define VOLTAGE_THRESHOLD_LOW   6.0f   // Low voltage threshold (V)
+#define VOLTAGE_THRESHOLD_LOW   6.5f   // Low voltage cutoff threshold (V)
 #define VOLTAGE_THRESHOLD_HIGH  8.4f   // High voltage threshold (V)
 
 #define PV_VALID_POWER_W        0.25f
@@ -177,17 +179,18 @@ void StartTask07(void const * argument);
 #define PV_LOAD_MARGIN_W        0.20f
 #define PV_DIRECT_MIN_POWER_W   2.00f
 #define PV_START_VOLTAGE_V      6.20f
-#define PV_STOP_VOLTAGE_V       5.30f
+#define PV_STOP_VOLTAGE_V       6.00f
 #define PV_PROBE_MIN_VOLTAGE_V  5.20f
 #define PV_BAD_SAMPLE_LIMIT     3U
 #define PV_LOADED_MIN_VOLTAGE_V 5.50f
 #define PV_WAKE_LUX_THRESHOLD   120.0f
-#define PV_PROBE_HOLD_MS        5000U
+#define PV_PROBE_HOLD_MS        8000U
 #define PV_RAMP_EVAL_MS         5000U
 #define PV_COOLDOWN_MS          10000U
 #define PV_CHARGE_MIN_POWER_W   0.60f
 #define PV_CHARGE_MARGIN_W      0.30f
-#define PV_CHARGE_VOLT_MARGIN_V 0.30f
+#define PV_CHARGE_VOLT_MARGIN_V 0.50f
+#define PV_CHARGE_HOLD_MARGIN_V 0.10f
 #define HOME_SOC_RESERVE_PCT    20.0f
 #define HOME_SOC_SAVE_PCT       30.0f
 #define HOME_SOC_COMFORT_PCT    50.0f
@@ -195,8 +198,8 @@ void StartTask07(void const * argument);
 #define CAR_SOC_CHARGE_FULL     90.0f
 #define HOME_SOC_V2H_START_PCT  20.0f
 #define HOME_SOC_V2H_STOP_PCT   35.0f
-#define CAR_SOC_V2H_START_PCT   60.0f
-#define CAR_SOC_V2H_STOP_PCT    40.0f
+#define CAR_SOC_V2H_START_PCT   30.0f
+#define CAR_SOC_V2H_STOP_PCT    20.0f
 #define HUMAN_SOC_QI_REQ_PCT    30.0f
 #define NIGHT_LUX_THRESHOLD     80.0f
 #define DAY_LUX_THRESHOLD       300.0f
@@ -205,16 +208,35 @@ void StartTask07(void const * argument);
 
 #define CAN_CMD_V2H_ON          0x01U
 #define CAN_CMD_V2H_OFF         0x02U
+#define CAN_CMD_CAR_CHARGE_ON   0x03U
+#define CAN_CMD_CAR_CHARGE_OFF  0x04U
 #define CAN_V2H_POWER_LIMIT     80U
+#define CAN_CAR_CHARGE_REPORT_MS 1000U
 
 #define SERIAL_DATA_LOG         1U
 #define SERIAL_VERBOSE_LOG      0U
-#define DATA_LOG_PERIOD_MS      2000U
+#define COMM_VERBOSE_LOG        0U
+#define DATA_LOG_PERIOD_MS      10000U
 #define DATA_SCENE_ID           0U
 #define ONENET_FULL_UPLOAD_MS    5000U
 #define ONENET_SWITCH_SYNC_MS    500U
 #define ONENET_CTRL_APPLY_DELAY_MS 1000U
 #define ONENET_SWITCH_HEARTBEAT_MS 5000U
+#define ONENET_PING_INTERVAL_MS  60000U  /* MQTT keepalive ping every 60s */
+#define ONENET_STARTUP_DELAY_MS  12000U  /* wait ESP8266 power/WiFi module startup */
+#define PV_PROBE_CHARGE_MS      10000U  /* probe charge duration: 10 seconds */
+#define PV_PROBE_SETTLE_MS      5000U   /* wait current/power to rise after charge MOS on */
+#define PV_ACTIVE_STABILIZE_MS  2000U   /* wait 2s after ACTIVE before probe */
+#define ENERGY_LSTM_UDP_PERIOD_MS 10000U  /* ESP32 averages 6 frames into one 60s LSTM sample */
+#define ENERGY_LSTM_DISPATCH_ENABLE 1U
+#define ENERGY_LSTM_SOC_MAX_DROP_PCT 3.0f
+#define ENERGY_LSTM_SOC_MAX_RISE_PCT 3.0f
+#define ENERGY_LSTM_PRED_VALID_MS 180000U
+#define ENERGY_LSTM_SOC_FALL_WARN_PCT 2.0f
+#define ENERGY_LSTM_HOME_CHARGE_MIN_SURPLUS_W 0.30f
+#define ENERGY_LSTM_CAR_CHARGE_MIN_SURPLUS_W 1.00f
+#define ENERGY_LSTM_CAR_MIN_FUTURE_HOME_SOC 88.0f
+#define ENERGY_PI_F             3.14159265358979323846f
 
 typedef struct
 {
@@ -230,6 +252,23 @@ typedef struct
 
 static BeijingClock_t g_bj_clock = {0};
 
+static uint8_t Beijing_GetLedPeriod(uint8_t hour)
+{
+    if (hour < 6U)
+    {
+        return 0U;  /* 00:00-06:00 */
+    }
+    if (hour < 18U)
+    {
+        return 1U;  /* 06:00-18:00 */
+    }
+    if (hour < 22U)
+    {
+        return 2U;  /* 18:00-22:00 */
+    }
+    return 3U;      /* 22:00-24:00 */
+}
+
 static void Mos_Write(GPIO_TypeDef *port, uint16_t pin, uint8_t on)
 {
     HAL_GPIO_WritePin(port, pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
@@ -238,6 +277,89 @@ static void Mos_Write(GPIO_TypeDef *port, uint16_t pin, uint8_t on)
 static uint8_t Key_IsPressed(GPIO_TypeDef *port, uint16_t pin)
 {
     return HAL_GPIO_ReadPin(port, pin) == GPIO_PIN_RESET;
+}
+
+static void Energy_GetRealHourSinCos(float *hour_sin, float *hour_cos)
+{
+    float real_hour;
+
+    if (hour_sin == NULL || hour_cos == NULL)
+    {
+        return;
+    }
+
+    if (g_bj_clock.valid)
+    {
+        uint32_t elapsed_s = (HAL_GetTick() - g_bj_clock.tick_ms) / 1000U;
+        uint32_t seconds_of_day =
+            ((uint32_t)g_bj_clock.hour * 3600U) +
+            ((uint32_t)g_bj_clock.minute * 60U) +
+            (uint32_t)g_bj_clock.second + elapsed_s;
+        seconds_of_day %= 86400U;
+        real_hour = (float)seconds_of_day / 3600.0f;
+    }
+    else
+    {
+        real_hour = (float)((HAL_GetTick() / 1000U) % 86400U) / 3600.0f;
+    }
+
+    *hour_sin = sinf(2.0f * ENERGY_PI_F * real_hour / 24.0f);
+    *hour_cos = cosf(2.0f * ENERGY_PI_F * real_hour / 24.0f);
+}
+
+static void Energy_FillLstmInput(EnergyLstmInput_t *input,
+                                 const SensorData_t *local,
+                                 const ESP32S3_Data_t *s3)
+{
+    if (input == NULL || local == NULL || s3 == NULL)
+    {
+        return;
+    }
+
+    memset(input, 0, sizeof(*input));
+    Energy_GetRealHourSinCos(&input->real_hour_sin, &input->real_hour_cos);
+    input->lux = local->lux;
+    input->pv_v = local->pv_ok ? local->pv_voltage : 0.0f;
+    input->pv_p = local->pv_ok ? local->pv_power : 0.0f;
+    input->home_v = local->ina226_ok ? local->bus_voltage : 0.0f;
+    input->home_soc = local->ina226_ok ? local->soc_pct : 0.0f;
+    input->load_p = local->ina3_ok ? local->ina3_power : 0.0f;
+    input->car_soc = (float)g_f1_battery.soc_pct;
+    input->human_soc = s3->valid ? s3->bat_pct : -1.0f;
+    input->pvsrc = HAL_GPIO_ReadPin(MOS_PV_SRC_PORT, MOS_PV_SRC_PIN) == GPIO_PIN_SET ? 1U : 0U;
+    input->hsrc = HAL_GPIO_ReadPin(MOS_HOME_SRC_PORT, MOS_HOME_SRC_PIN) == GPIO_PIN_SET ? 1U : 0U;
+    input->rigid = HAL_GPIO_ReadPin(MOS_RIGID_LOAD_PORT, MOS_RIGID_LOAD_PIN) == GPIO_PIN_SET ? 1U : 0U;
+    input->led = HAL_GPIO_ReadPin(MOS_LED_PORT, MOS_LED_PIN) == GPIO_PIN_SET ? 1U : 0U;
+    input->fan = HAL_GPIO_ReadPin(MOS_FAN_PORT, MOS_FAN_PIN) == GPIO_PIN_SET ? 1U : 0U;
+    input->qi = HAL_GPIO_ReadPin(MOS_QI_PORT, MOS_QI_PIN) == GPIO_PIN_SET ? 1U : 0U;
+    input->hchg = HAL_GPIO_ReadPin(MOS_CHARGE_PORT, MOS_HOME_CHARGE_PIN) == GPIO_PIN_SET ? 1U : 0U;
+    input->cchg = HAL_GPIO_ReadPin(MOS_CHARGE_PORT, MOS_CAR_CHARGE_PIN) == GPIO_PIN_SET ? 1U : 0U;
+    input->v2h = g_v2h_active ? 1U : 0U;
+}
+
+static float Energy_ClampFloat(float value, float min_value, float max_value)
+{
+    if (value < min_value) return min_value;
+    if (value > max_value) return max_value;
+    return value;
+}
+
+static void Energy_ClampLstmPrediction(EnergyLstmPrediction_t *pred,
+                                       const SensorData_t *local)
+{
+    float soc_now;
+    float soc_min;
+    float soc_max;
+
+    if (pred == NULL || local == NULL || !pred->valid || !local->ina226_ok)
+    {
+        return;
+    }
+
+    soc_now = local->soc_pct;
+    soc_min = Energy_ClampFloat(soc_now - ENERGY_LSTM_SOC_MAX_DROP_PCT, 0.0f, 100.0f);
+    soc_max = Energy_ClampFloat(soc_now + ENERGY_LSTM_SOC_MAX_RISE_PCT, 0.0f, 100.0f);
+    pred->future_home_soc = Energy_ClampFloat(pred->future_home_soc, soc_min, soc_max);
 }
 
 typedef enum
@@ -329,6 +451,32 @@ static void SendCarV2HCommand(uint8_t enable)
     }
 }
 
+static void SendCarChargeCommand(uint8_t enable, float charge_power_w)
+{
+    CAN_CtrlCmd_t cmd = {0};
+    int power_0p1w;
+
+    cmd.cmd = enable ? CAN_CMD_CAR_CHARGE_ON : CAN_CMD_CAR_CHARGE_OFF;
+    if (enable)
+    {
+        if (charge_power_w < 0.0f)
+        {
+            charge_power_w = 0.0f;
+        }
+        power_0p1w = (int)(charge_power_w * 10.0f + 0.5f);
+        if (power_0p1w > 255)
+        {
+            power_0p1w = 255;
+        }
+        cmd.param = (uint8_t)power_0p1w;
+    }
+
+    if (CAN_App_Send(CAN_ID_CTRL_CMD, (uint8_t *)&cmd, sizeof(cmd)) != 0)
+    {
+        if (SERIAL_VERBOSE_LOG) printf("CAN car charge %s send failed\r\n", enable ? "ON" : "OFF");
+    }
+}
+
 /**
   * @brief  Bottom-layer home energy dispatch.
   *         PE0: PV 5V source connects to the home load bus when stable enough.
@@ -361,6 +509,10 @@ void Relay_Control(float pv_power_w, float home_load_power_w,
     static uint8_t pv_bad_count = 0;
     static uint8_t led_manual_override = 0;
     static uint8_t led_manual_on = 0;
+    static uint16_t led_manual_year = 0;
+    static uint8_t led_manual_month = 0;
+    static uint8_t led_manual_day = 0;
+    static uint8_t led_manual_period = 0xFFU;
     static uint8_t fan_user_req = 0;
     static uint32_t fan_local_override_tick = 0;
     static uint8_t qi_user_req = 0;
@@ -369,6 +521,13 @@ void Relay_Control(float pv_power_w, float home_load_power_w,
     static uint8_t light_user_req = 1;
     static uint8_t prev_led_out = 0xFFU;
     static uint8_t prev_fan_out = 0xFFU;
+    static uint8_t pv_charge_probed = 0;  /* 0=idle, 1=probing, 2=done */
+    static uint8_t pv_probe_target = 0;   /* 0=none, 1=home battery, 2=car battery */
+    static float pv_probe_threshold = 0.0f;
+    static uint32_t pv_probe_start_tick = 0;
+    static uint8_t pv_charging_active = 0;  /* hysteresis: 1=charging, 0=not charging */
+    static uint8_t car_charge_reported = 0;
+    static uint32_t car_charge_report_tick = 0;
     static KeyDebounce_t led_key_fsm = {KEY_FSM_IDLE, 0};
     static KeyDebounce_t fan_key_fsm = {KEY_FSM_IDLE, 0};
     static KeyDebounce_t qi_key_fsm = {KEY_FSM_IDLE, 0};
@@ -390,6 +549,16 @@ void Relay_Control(float pv_power_w, float home_load_power_w,
         HAL_GPIO_WritePin(MOS_CHARGE_PORT, MOS_CHARGE_ALL_PINS, GPIO_PIN_RESET);
         pv_state = PV_FSM_IDLE;
         pv_bad_count = 0;
+        pv_charge_probed = 0;
+        pv_probe_target = 0;
+        pv_probe_threshold = 0.0f;
+        pv_probe_start_tick = 0;
+        pv_charging_active = 0;
+        if (car_charge_reported)
+        {
+            SendCarChargeCommand(0, 0.0f);
+            car_charge_reported = 0;
+        }
         g_charging_active = 0;
         return;
     }
@@ -404,15 +573,20 @@ void Relay_Control(float pv_power_w, float home_load_power_w,
     {
         case PV_FSM_IDLE:
             pv_bad_count = 0;
+            if (pv_charge_probed == 1U)
+            {
+                pv_charge_probed = 0;
+            }
+            pv_probe_start_tick = 0;
             if (pv_start_condition)
             {
                 pv_state = PV_FSM_PROBE;
                 pv_state_tick = now_tick;
-                if (SERIAL_VERBOSE_LOG)
-                {
-                    printf("PV FSM: IDLE->PROBE V=%.3f P=%.3f lux=%.1f\r\n",
-                           (double)pv_voltage_v, (double)pv_power_w, (double)lux);
-                }
+                // if (SERIAL_VERBOSE_LOG)
+                // {
+                //     printf("PV FSM: IDLE->PROBE V=%.3f P=%.3f lux=%.1f\r\n",
+                //            (double)pv_voltage_v, (double)pv_power_w, (double)lux);
+                // }
             }
             break;
 
@@ -486,6 +660,11 @@ void Relay_Control(float pv_power_w, float home_load_power_w,
                 pv_state = pv_start_condition ? PV_FSM_PROBE : PV_FSM_IDLE;
                 pv_state_tick = now_tick;
                 pv_bad_count = 0;
+                if (pv_charge_probed == 1U)
+                {
+                    pv_charge_probed = 0;
+                }
+                pv_probe_start_tick = 0;
             }
             break;
 
@@ -503,18 +682,148 @@ void Relay_Control(float pv_power_w, float home_load_power_w,
     uint8_t enough_for_pv_load = pv_ok && pv_source_enabled;
     uint8_t home_bat_allowed = home_soc > HOME_SOC_RESERVE_PCT;
     uint8_t low_energy_mode = (!pv_available && home_soc < HOME_SOC_SAVE_PCT);
-    uint8_t night_or_dark = lux < NIGHT_LUX_THRESHOLD;
+    uint8_t time_valid = g_bj_clock.valid;
+    uint16_t bj_year = g_bj_clock.year;
+    uint8_t bj_month = g_bj_clock.month;
+    uint8_t bj_day = g_bj_clock.day;
+    uint8_t bj_hour = g_bj_clock.hour;
+    uint8_t bj_led_period = Beijing_GetLedPeriod(bj_hour);
+    uint8_t led_auto_request;
     float pv_surplus_w = pv_power_w - home_load_power_w;
+    uint8_t charge_target = 0; /* 0=none, 1=home, 2=car */
+    float charge_target_voltage_v = 0.0f;
+    EnergyLstmPrediction_t ai_pred;
+    float ai_future_surplus_w = 0.0f;
+    float ai_future_soc_delta = 0.0f;
+    uint8_t ai_home_soc_falling = 0U;
+    uint8_t ai_allow_new_charge_probe = 1U;
+    uint8_t ai_allow_home_charge = 1U;
+    uint8_t ai_allow_car_charge = 1U;
+
+    osMutexWait(g_mutex, osWaitForever);
+    ai_pred = g_energy_lstm_pred;
+    osMutexRelease(g_mutex);
+    if (ENERGY_LSTM_DISPATCH_ENABLE &&
+        ai_pred.valid && (now_tick - ai_pred.tick_ms) <= ENERGY_LSTM_PRED_VALID_MS)
+    {
+        ai_future_surplus_w = ai_pred.future_pv_p - ai_pred.future_load_p;
+        ai_future_soc_delta = ai_pred.future_home_soc - home_soc;
+        ai_home_soc_falling = ai_future_soc_delta < -ENERGY_LSTM_SOC_FALL_WARN_PCT ? 1U : 0U;
+
+        if (ai_future_surplus_w < ENERGY_LSTM_HOME_CHARGE_MIN_SURPLUS_W)
+        {
+            ai_allow_new_charge_probe = 0U;
+            ai_allow_home_charge = pv_charging_active ? 1U : 0U;
+        }
+
+        if (ai_home_soc_falling ||
+            ai_future_surplus_w < ENERGY_LSTM_CAR_CHARGE_MIN_SURPLUS_W ||
+            ai_pred.future_home_soc < ENERGY_LSTM_CAR_MIN_FUTURE_HOME_SOC)
+        {
+            ai_allow_car_charge = 0U;
+        }
+
+        if (ai_home_soc_falling && !pv_available)
+        {
+            low_energy_mode = 1U;
+        }
+    }
+
+    if (home_soc < HOME_SOC_CHARGE_FULL)
+    {
+        charge_target = 1U;
+        charge_target_voltage_v = home_battery_voltage_v;
+    }
+    else if (car_soc < CAR_SOC_CHARGE_FULL && car_battery_voltage_v > 1.0f)
+    {
+        charge_target = 2U;
+        charge_target_voltage_v = car_battery_voltage_v;
+    }
+
+    if (charge_target != pv_probe_target)
+    {
+        pv_charge_probed = 0;
+        pv_probe_target = charge_target;
+        pv_probe_threshold = 0.0f;
+        pv_probe_start_tick = 0;
+    }
+
+    /* Hysteresis: start charging at 0.5W surplus, stop at 0.2W.
+     * Prevents MOS toggling when surplus hovers around the threshold. */
     uint8_t can_charge_from_pv =
         pv_available &&
-        (pv_surplus_w > (PV_CHARGE_MIN_POWER_W + PV_CHARGE_MARGIN_W));
+        (pv_surplus_w > (pv_charging_active ? 0.20f : (PV_CHARGE_MIN_POWER_W + PV_CHARGE_MARGIN_W)));
+    uint8_t pv_load_priority_ok =
+        pv_available &&
+        (pv_voltage_v > PV_LOADED_MIN_VOLTAGE_V) &&
+        (pv_power_w >= (home_load_power_w + (pv_charging_active ? 0.0f : PV_LOAD_MARGIN_W)));
+    /* Probe charging:
+     * The INA226 only sees the true PV charging capability after the charge MOS
+     * is briefly enabled. Use one shared probe policy for home and car battery:
+     * home is selected first; car is selected only after home SOC is high.
+     */
+    uint8_t pv_probe_charge = 0;
+    if (charge_target != 0U && pv_probe_threshold <= 0.0f)
+    {
+        pv_probe_threshold = charge_target_voltage_v + PV_CHARGE_VOLT_MARGIN_V;
+    }
+    /* Start probe: PV in ACTIVE, waited 2s to stabilize, voltage enough for target.
+     * Do not require pv_load_priority_ok here: before the charge MOS is enabled,
+     * the measured PV power may only reflect the home load, not the charge branch.
+     */
+    if (charge_target != 0U &&
+        pv_available && pv_charge_probed == 0 &&
+        ai_allow_new_charge_probe &&
+        (charge_target != 2U || ai_allow_car_charge) &&
+        (pv_voltage_v > pv_probe_threshold) &&
+        (now_tick - pv_state_tick) >= PV_ACTIVE_STABILIZE_MS)
+    {
+        pv_charge_probed = 1;  /* 1 = probing in progress */
+        pv_probe_start_tick = now_tick;
+    }
+    /* During probe: keep charging, then judge after the PV/battery voltage settles. */
+    if (pv_charge_probed == 1)
+    {
+        uint32_t probe_elapsed_ms = now_tick - pv_probe_start_tick;
+        uint8_t probe_settled = probe_elapsed_ms >= PV_PROBE_SETTLE_MS;
+
+        pv_probe_charge = 1;
+        /* The PV voltage normally drops as soon as the charge MOS is enabled.
+         * Check loaded voltage and power only after INA226 and the battery branch settle.
+         */
+        if (charge_target == 0U ||
+            (probe_settled &&
+             (!pv_load_priority_ok ||
+              pv_voltage_v <= (charge_target_voltage_v + PV_CHARGE_HOLD_MARGIN_V))))
+        {
+            pv_probe_threshold = pv_voltage_v + PV_CHARGE_VOLT_MARGIN_V;
+            pv_charge_probed = 0;  /* fail, wait for recovery */
+        }
+        /* Success: probe time complete and loaded PV voltage stayed above battery. */
+        else if (probe_elapsed_ms >= PV_PROBE_CHARGE_MS)
+        {
+            pv_charge_probed = 2;  /* success, use normal logic */
+        }
+    }
+    /* Charging allowed when:
+     * - Probe in progress, OR
+     * - Normal charging: surplus power enough AND PV voltage > target battery voltage */
     uint8_t pv_can_charge_home =
-        can_charge_from_pv &&
-        (pv_voltage_v > (home_battery_voltage_v + PV_CHARGE_VOLT_MARGIN_V));
+        (charge_target == 1U) &&
+        ai_allow_home_charge &&
+        (pv_probe_charge ||
+         (can_charge_from_pv &&
+          pv_load_priority_ok &&
+          (pv_voltage_v > (home_battery_voltage_v +
+                           (pv_charging_active ? PV_CHARGE_HOLD_MARGIN_V : PV_CHARGE_VOLT_MARGIN_V)))));
     uint8_t pv_can_charge_car =
-        can_charge_from_pv &&
-        (car_battery_voltage_v > 1.0f) &&
-        (pv_voltage_v > (car_battery_voltage_v + PV_CHARGE_VOLT_MARGIN_V));
+        (charge_target == 2U) &&
+        ai_allow_car_charge &&
+        (pv_probe_charge ||
+         (can_charge_from_pv &&
+          pv_load_priority_ok &&
+          (pv_voltage_v > (car_battery_voltage_v +
+                           (pv_charging_active ? PV_CHARGE_HOLD_MARGIN_V : PV_CHARGE_VOLT_MARGIN_V)))));
     uint8_t v2h_should_start =
         (!enough_for_pv_load &&
          home_soc <= HOME_SOC_V2H_START_PCT &&
@@ -542,6 +851,10 @@ void Relay_Control(float pv_power_w, float home_load_power_w,
         {
             led_manual_override = 1;
             led_manual_on = (uint8_t)cloud_ctrl.home_led;
+            led_manual_year = bj_year;
+            led_manual_month = bj_month;
+            led_manual_day = bj_day;
+            led_manual_period = bj_led_period;
         }
         if (cloud_ctrl.home_feng >= 0 &&
             (HAL_GetTick() - fan_local_override_tick) > 8000U)
@@ -559,12 +872,25 @@ void Relay_Control(float pv_power_w, float home_load_power_w,
         }
     }
 
+    if (time_valid && led_manual_override &&
+        (led_manual_year != bj_year ||
+         led_manual_month != bj_month ||
+         led_manual_day != bj_day ||
+         led_manual_period != bj_led_period))
+    {
+        led_manual_override = 0;
+    }
+
     if (Key_GetPressedEvent(&led_key_fsm, led_key, now_tick))
     {
         uint8_t led_now =
             HAL_GPIO_ReadPin(MOS_LED_PORT, MOS_LED_PIN) == GPIO_PIN_SET ? 1U : 0U;
         led_manual_override = 1;
         led_manual_on = led_now ? 0U : 1U;
+        led_manual_year = bj_year;
+        led_manual_month = bj_month;
+        led_manual_day = bj_day;
+        led_manual_period = bj_led_period;
         // if (SERIAL_VERBOSE_LOG) printf("KEY2 LED request=%d\r\n", led_manual_on);
     }
     if (Key_GetPressedEvent(&fan_key_fsm, fan_key, now_tick))
@@ -575,8 +901,8 @@ void Relay_Control(float pv_power_w, float home_load_power_w,
     }
     if (Key_GetPressedEvent(&qi_key_fsm, qi_key, now_tick))
     {
-        qi_user_req = qi_active ? 0U : 1U;
-        if (qi_active) qi_active = 0;
+        qi_user_req = qi_user_req ? 0U : 1U;
+        qi_active = qi_user_req;
         // if (SERIAL_VERBOSE_LOG) printf("KEY0 QI request=%d\r\n", qi_user_req);
     }
 
@@ -612,8 +938,6 @@ void Relay_Control(float pv_power_w, float home_load_power_w,
     uint8_t use_pv_source = enough_for_pv_load;
     uint8_t use_home_source = (!use_pv_source && home_bat_allowed && !g_v2h_active);
     uint8_t home_source_available = use_pv_source || use_home_source || g_v2h_active;
-    uint8_t comfort_allowed = home_source_available &&
-                              (pv_available || home_soc > HOME_SOC_COMFORT_PCT);
 
     Mos_Write(MOS_PV_SRC_PORT, MOS_PV_SRC_PIN, use_pv_source);
     Mos_Write(MOS_HOME_SRC_PORT, MOS_HOME_SRC_PIN, use_home_source);
@@ -630,20 +954,67 @@ void Relay_Control(float pv_power_w, float home_load_power_w,
     {
         HAL_GPIO_WritePin(MOS_CHARGE_PORT, MOS_HOME_CHARGE_PIN, GPIO_PIN_SET);
         HAL_GPIO_WritePin(MOS_CHARGE_PORT, MOS_CAR_CHARGE_PIN, GPIO_PIN_RESET);
+        pv_charging_active = 1;
     }
-    else if (pv_can_charge_car && home_soc >= HOME_SOC_CHARGE_FULL &&
+    else if (pv_can_charge_car && ai_allow_car_charge &&
+             home_soc >= HOME_SOC_CHARGE_FULL &&
              car_soc < CAR_SOC_CHARGE_FULL)
     {
         HAL_GPIO_WritePin(MOS_CHARGE_PORT, MOS_HOME_CHARGE_PIN, GPIO_PIN_RESET);
         HAL_GPIO_WritePin(MOS_CHARGE_PORT, MOS_CAR_CHARGE_PIN, GPIO_PIN_SET);
+        pv_charging_active = 1;
     }
     else
     {
         HAL_GPIO_WritePin(MOS_CHARGE_PORT, MOS_CHARGE_ALL_PINS, GPIO_PIN_RESET);
+        pv_charging_active = 0;
     }
 
-    /* LED: low-light auto by default; KEY2 overrides it so local OFF can win at night. */
-    uint8_t led_request = led_manual_override ? led_manual_on : night_or_dark;
+    uint8_t car_charge_on =
+        HAL_GPIO_ReadPin(MOS_CHARGE_PORT, MOS_CAR_CHARGE_PIN) == GPIO_PIN_SET ? 1U : 0U;
+    if (car_charge_on)
+    {
+        if (!car_charge_reported ||
+            (now_tick - car_charge_report_tick) >= CAN_CAR_CHARGE_REPORT_MS)
+        {
+            SendCarChargeCommand(1, pv_power_w);
+            car_charge_report_tick = now_tick;
+            car_charge_reported = 1U;
+        }
+    }
+    else if (car_charge_reported)
+    {
+        SendCarChargeCommand(0, 0.0f);
+        car_charge_report_tick = now_tick;
+        car_charge_reported = 0U;
+    }
+
+    if (time_valid)
+    {
+        if (bj_hour < 6U)
+        {
+            led_auto_request = 0U;
+        }
+        else if (bj_hour >= 18U && bj_hour < 22U)
+        {
+            led_auto_request = 1U;
+        }
+        else if (bj_hour >= 22U)
+        {
+            led_auto_request = 0U;
+        }
+        else
+        {
+            led_auto_request = (lux < NIGHT_LUX_THRESHOLD) ? 1U : 0U;
+        }
+    }
+    else
+    {
+        led_auto_request = (lux < NIGHT_LUX_THRESHOLD) ? 1U : 0U;
+    }
+
+    /* LED: Beijing time auto by default; key/cloud control locks auto until next day. */
+    uint8_t led_request = led_manual_override ? led_manual_on : led_auto_request;
     uint8_t led_out = home_source_available &&
                       led_request &&
                       !low_energy_mode &&
@@ -651,9 +1022,9 @@ void Relay_Control(float pv_power_w, float home_load_power_w,
     Mos_Write(MOS_LED_PORT, MOS_LED_PIN, led_out);
     if (led_out != prev_led_out)
     {
-        printf("LED: req=%u out=%u src=%u low=%u soc_ok=%u key=%u manual=%u\r\n",
-               led_request, led_out, home_source_available, low_energy_mode,
-               home_bat_allowed, led_key, led_manual_override);
+        // printf("LED: req=%u out=%u src=%u low=%u soc_ok=%u key=%u manual=%u\r\n",
+        //        led_request, led_out, home_source_available, low_energy_mode,
+        //        home_bat_allowed, led_key, led_manual_override);
         prev_led_out = led_out;
     }
 
@@ -667,18 +1038,8 @@ void Relay_Control(float pv_power_w, float home_load_power_w,
         prev_fan_out = fan_out;
     }
 
-    /* Qi: PE4 local request or low human SOC starts charging; high SOC/low energy stops it. */
-    if ((qi_user_req || (human_soc >= 0.0f && human_soc < HUMAN_SOC_QI_REQ_PCT)) &&
-        comfort_allowed)
-    {
-        qi_active = 1;
-    }
-    if (!home_source_available || low_energy_mode ||
-        (human_soc >= 0.0f && human_soc > HUMAN_SOC_QI_STOP_PCT))
-    {
-        qi_active = 0;
-        if (human_soc >= 0.0f && human_soc > HUMAN_SOC_QI_STOP_PCT) qi_user_req = 0;
-    }
+    /* Qi: key/cloud request wins; energy protection can still force the output off. */
+    qi_active = (qi_user_req && home_source_available && !low_energy_mode) ? 1U : 0U;
     Mos_Write(MOS_QI_PORT, MOS_QI_PIN, qi_active);
 
     /* Keep the DAC-driven PV simulator active when light exists and energy is useful. */
@@ -699,14 +1060,14 @@ void Relay_Control(float pv_power_w, float home_load_power_w,
 }
 
 /**
-  * @brief  Voltage-to-SOC lookup table for 2S LiPo (6.0V ~ 8.4V)
+  * @brief  Voltage-to-SOC lookup table for 2S LiPo (6.5V cutoff ~ 8.4V full)
   *         Piecewise linear interpolation between known breakpoints
   */
 static uint8_t SOC_VoltageToPercent(float voltage)
 {
     /* Voltage(mV) -> SOC(%) breakpoints */
-    static const uint16_t v_mv[] = { 6000, 6400, 6800, 7200, 7600, 8000, 8400 };
-    static const uint8_t  soc[]  = {    0,   10,   20,   40,   65,   85,  100 };
+    static const uint16_t v_mv[] = { 6500, 6800, 7200, 7600, 8000, 8400 };
+    static const uint8_t  soc[]  = {    0,   20,   40,   65,   90,  100 };
     const int n = sizeof(v_mv) / sizeof(v_mv[0]);
 
     int mv = (int)(voltage * 1000.0f);
@@ -779,8 +1140,8 @@ void StartDefaultTask(void const * argument)
       float current_mA = avg_i * 1000.0f;
 
       /* --- SOC Calculation --- */
-      /* 0. Over-discharge / battery disconnected: V < 6.0V -> force 0%, reset init */
-      if (avg_v < 6.0f) {
+      /* 0. Over-discharge / battery cutoff: V < 6.5V -> force 0%, reset init */
+      if (avg_v < VOLTAGE_THRESHOLD_LOW) {
           soc_coulomb_mah = 0.0f;
           soc_initialized = 0;
 
@@ -796,10 +1157,10 @@ void StartDefaultTask(void const * argument)
 
           if ((HAL_GetTick() - dbg_tick) >= 3000) {
               dbg_tick = HAL_GetTick();
-              if (SERIAL_VERBOSE_LOG)
-              {
-                  printf("SOC: V=%.3fV < 6.0V -> 0%%\r\n", (double)avg_v);
-              }
+              // if (SERIAL_VERBOSE_LOG)
+              // {
+              //     printf("SOC: V=%.3fV < 6.5V -> 0%%\r\n", (double)avg_v);
+              // }
           }
           osDelay(200);
           continue;
@@ -810,11 +1171,11 @@ void StartDefaultTask(void const * argument)
           uint8_t v_soc = SOC_VoltageToPercent(avg_v);
           soc_coulomb_mah = (float)v_soc / 100.0f * 2200.0f;
           soc_initialized = 1;
-          if (SERIAL_VERBOSE_LOG)
-          {
-              printf("SOC init: V=%.3fV -> %d%% (%.1fmAh)\r\n",
-                     (double)avg_v, v_soc, (double)soc_coulomb_mah);
-          }
+          // if (SERIAL_VERBOSE_LOG)
+          // {
+          //     printf("SOC init: V=%.3fV -> %d%% (%.1fmAh)\r\n",
+          //            (double)avg_v, v_soc, (double)soc_coulomb_mah);
+          // }
       }
 
       /* 2. Coulomb counting: integrate current over 200ms interval */
@@ -853,12 +1214,12 @@ void StartDefaultTask(void const * argument)
       /* Debug: print SOC detail every 3 seconds */
       if ((HAL_GetTick() - dbg_tick) >= 3000) {
           dbg_tick = HAL_GetTick();
-          if (SERIAL_VERBOSE_LOG)
-          {
-              printf("SOC: V=%.3fV I=%.3fmAh mah=%.1f soc=%.1f%%\r\n",
-                     (double)avg_v, (double)current_mA,
-                     (double)soc_coulomb_mah, (double)soc);
-          }
+          // if (SERIAL_VERBOSE_LOG)
+          // {
+          //     printf("SOC: V=%.3fV I=%.3fmAh mah=%.1f soc=%.1f%%\r\n",
+          //            (double)avg_v, (double)current_mA,
+          //            (double)soc_coulomb_mah, (double)soc);
+          // }
       }
 
       osMutexWait(g_mutex, osWaitForever);
@@ -888,27 +1249,28 @@ void StartDefaultTask(void const * argument)
 void StartTask01(void const * argument)
 {
   SensorData_t local;
+  (void)local;  /* used when debug printf is enabled */
 
   for(;;)
   {
     osSemaphoreWait(g_data_ready, osWaitForever);
 
-    osMutexWait(g_mutex, osWaitForever);
-    local = g_sensor;
-    osMutexRelease(g_mutex);
+    // osMutexWait(g_mutex, osWaitForever);
+    // local = g_sensor;
+    // osMutexRelease(g_mutex);
 
-    if (SERIAL_VERBOSE_LOG && local.ina226_ok)
-    {
-      printf("INA226: V=%.3fV I=%.3fmA P=%.3fmW SOC=%.1f%%\r\n",
-             (double)local.bus_voltage,
-             (double)(local.current * 1000.0f),
-             (double)(local.power * 1000.0f),
-             (double)local.soc_pct);
-    }
-    if (SERIAL_VERBOSE_LOG && local.gy30_ok)
-    {
-      printf("GY30: %.1f lux\r\n", (double)local.lux);
-    }
+    // if (SERIAL_VERBOSE_LOG && local.ina226_ok)
+    // {
+    //   printf("INA226: V=%.3fV I=%.3fmA P=%.3fmW SOC=%.1f%%\r\n",
+    //          (double)local.bus_voltage,
+    //          (double)(local.current * 1000.0f),
+    //          (double)(local.power * 1000.0f),
+    //          (double)local.soc_pct);
+    // }
+    // if (SERIAL_VERBOSE_LOG && local.gy30_ok)
+    // {
+    //   printf("GY30: %.1f lux\r\n", (double)local.lux);
+    // }
 
     osDelay(1000);
   }
@@ -1007,6 +1369,7 @@ void StartTask04(void const * argument)
   INA226_Data pv_data;
   INA226_Data ina3_data;
   ESP32S3_Data_t local_s3;
+  EnergyLstmPrediction_t local_pred;
 
   #define PV_AVG_N 8
 
@@ -1110,6 +1473,7 @@ void StartTask04(void const * argument)
     osMutexWait(g_mutex, osWaitForever);
     local_data = g_sensor;
     local_s3 = g_esp32s3_data;
+    local_pred = g_energy_lstm_pred;
     osMutexRelease(g_mutex);
 
     /* Check for received CAN command from STM32F1 */
@@ -1137,13 +1501,13 @@ void StartTask04(void const * argument)
     if (!data_header_printed)
     {
       data_header_printed = 1;
-      printf("DATA,tick_ms,scene,lux,pv_ok,pv_v,pv_i,pv_p,home_ok,home_v,home_i,home_p,home_soc,load_ok,load_v,load_i,load_p,car_soc,s3_valid,s3_v,s3_soc,s3_hr,s3_spo2,s3_state,pvsrc,hsrc,rigid,led,fan,qi,hchg,cchg,v2h\r\n");
+      printf("DATA,tick_ms,scene,lux,pv_ok,pv_v,pv_i,pv_p,home_ok,home_v,home_i,home_p,home_soc,load_ok,load_v,load_i,load_p,car_soc,s3_valid,s3_v,s3_soc,s3_hr,s3_spo2,s3_state,pvsrc,hsrc,rigid,led,fan,qi,hchg,cchg,v2h,ai_valid,ai_pv_p,ai_load_p,ai_home_soc\r\n");
     }
 
     if ((HAL_GetTick() - data_log_tick) >= DATA_LOG_PERIOD_MS)
     {
       data_log_tick = HAL_GetTick();
-      printf("DATA,%lu,%u,%.1f,%u,%.3f,%.3f,%.3f,%u,%.3f,%.3f,%.3f,%.1f,%u,%.3f,%.3f,%.3f,%u,%u,%.3f,%.1f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\r\n",
+      printf("DATA,%lu,%u,%.1f,%u,%.3f,%.3f,%.3f,%u,%.3f,%.3f,%.3f,%.1f,%u,%.3f,%.3f,%.3f,%u,%u,%.3f,%.1f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%.3f,%.3f,%.1f\r\n",
              (unsigned long)data_log_tick,
              DATA_SCENE_ID,
              (double)local_data.lux,
@@ -1175,7 +1539,11 @@ void StartTask04(void const * argument)
              HAL_GPIO_ReadPin(MOS_QI_PORT, MOS_QI_PIN) == GPIO_PIN_SET,
              HAL_GPIO_ReadPin(MOS_CHARGE_PORT, MOS_HOME_CHARGE_PIN) == GPIO_PIN_SET,
              HAL_GPIO_ReadPin(MOS_CHARGE_PORT, MOS_CAR_CHARGE_PIN) == GPIO_PIN_SET,
-             g_v2h_active);
+             g_v2h_active,
+             local_pred.valid,
+             (double)(local_pred.valid ? local_pred.future_pv_p : -1.0f),
+             (double)(local_pred.valid ? local_pred.future_load_p : -1.0f),
+             (double)(local_pred.valid ? local_pred.future_home_soc : -1.0f));
     }
 #endif
 
@@ -1197,13 +1565,17 @@ void StartTask05(void const * argument)
   CAN_BatteryData_t prev_f1_battery;
   ESP32S3_Data_t local_esp32s3;
   ESP32S3_Data_t prev_esp32s3;
+  EnergyLstmPrediction_t local_pred;
+  EnergyLstmPrediction_t prev_pred;
   char local_time[32];
   char prev_time[32] = "";
+  char pred_line[24];
 
   /* Initialize prev to invalid values so first update always draws */
   memset(&prev, 0xFF, sizeof(prev));
   memset(&prev_f1_battery, 0, sizeof(prev_f1_battery));
   memset(&prev_esp32s3, 0xFF, sizeof(prev_esp32s3));
+  memset(&prev_pred, 0xFF, sizeof(prev_pred));
 
   /* Clear screen and draw static labels */
   lcd_clear(WHITE);
@@ -1220,13 +1592,18 @@ void StartTask05(void const * argument)
   uint16_t s3_base_x = use_bottom_area ? 10U : (use_right_area ? 260U : 142U);
   uint16_t s3_base_y = use_bottom_area ? 560U : (use_right_area ? 160U : 382U);
   uint16_t s3_value_x = s3_base_x + 54U;
-  uint16_t time_base_x = s3_base_x;
+  uint16_t time_base_x = use_right_area ? 520U : s3_base_x;
   uint16_t time_base_y = use_bottom_area ? (uint16_t)(s3_base_y + 150U) :
-                         (use_right_area ? (uint16_t)(s3_base_y + 150U) : 360U);
+                         (use_right_area ? 160U : 360U);
+  uint16_t pred_base_x = use_bottom_area ? 220U : (use_right_area ? 520U : 124U);
+  uint16_t pred_base_y = use_bottom_area ? s3_base_y : (use_right_area ? 240U : 310U);
+  uint16_t pred_clear_x2 = use_bottom_area ? lcd_max_x : (use_right_area ? lcd_max_x : 239U);
+  uint16_t pred_clear_y2 = (uint16_t)(pred_base_y + 80U);
   uint16_t s3_clear_x2 = use_bottom_area ? lcd_max_x : (use_right_area ? lcd_max_x : 240U);
   uint16_t s3_clear_y2 = use_bottom_area ? (s3_base_y + 132U) :
                          (use_right_area ? (s3_base_y + 132U) : (s3_base_y + 96U));
   if (s3_clear_y2 > lcd_max_y) s3_clear_y2 = lcd_max_y;
+  if (pred_clear_y2 > lcd_max_y) pred_clear_y2 = lcd_max_y;
 
   /* Section 1: Home Battery INA226 */
   lcd_show_string(10, 10, 200, 16, 16, "Home Battery", RED);
@@ -1276,6 +1653,7 @@ void StartTask05(void const * argument)
   lcd_show_string(mos_base_x, mos_base_y, 180, 16, 16, "MOS State", RED);
   lcd_show_string(time_base_x, time_base_y, 120, 16, 16, "BJ Time", RED);
   lcd_show_string(s3_base_x, s3_base_y, 120, 16, 16, "ESP32-S3", RED);
+  lcd_show_string(pred_base_x, pred_base_y, 120, 16, 16, "AI Pred", RED);
 
   /* Initialize touch screen */
   touch_ok = tp_init();
@@ -1291,6 +1669,7 @@ void StartTask05(void const * argument)
     osMutexWait(g_mutex, osWaitForever);
     local = g_sensor;
     local_esp32s3 = g_esp32s3_data;
+    local_pred = g_energy_lstm_pred;
     strncpy(local_time, g_beijing_time, sizeof(local_time) - 1U);
     local_time[sizeof(local_time) - 1U] = '\0';
     osMutexRelease(g_mutex);
@@ -1321,7 +1700,7 @@ void StartTask05(void const * argument)
         if (hv_f < 0) hv_f = -hv_f;
         lcd_show_num(30, 28, hv_i, 2, 16, RED);
         lcd_show_char(46, 28, '.', 16, 0, RED);
-        lcd_show_num(54, 28, hv_f, 2, 16, RED);
+        lcd_show_xnum(54, 28, hv_f, 2, 16, 0x80, RED);
         lcd_show_string(78, 28, 20, 16, 16, "V", RED);
         /* I */
         int hma = (int)(local.current * 1000.0f);
@@ -1361,7 +1740,7 @@ void StartTask05(void const * argument)
         if (n3_f < 0) n3_f = -n3_f;
         lcd_show_num(30, 118, n3_i, 2, 16, RED);
         lcd_show_char(46, 118, '.', 16, 0, RED);
-        lcd_show_num(54, 118, n3_f, 2, 16, RED);
+        lcd_show_xnum(54, 118, n3_f, 2, 16, 0x80, RED);
         lcd_show_string(78, 118, 20, 16, 16, "V", RED);
 
         int n3ma = (int)(local.ina3_current * 1000.0f);
@@ -1392,7 +1771,7 @@ void StartTask05(void const * argument)
         if (pv_f < 0) pv_f = -pv_f;
         lcd_show_num(30, 190, pv_i, 2, 16, RED);
         lcd_show_char(46, 190, '.', 16, 0, RED);
-        lcd_show_num(54, 190, pv_f, 2, 16, RED);
+        lcd_show_xnum(54, 190, pv_f, 2, 16, 0x80, RED);
         lcd_show_string(78, 190, 20, 16, 16, "V", RED);
 
         int pi_ma = (int)(local.pv_current * 1000.0f);
@@ -1419,7 +1798,7 @@ void StartTask05(void const * argument)
       if (mv_f < 0) mv_f = -mv_f;
       lcd_show_num(100, 250, mv_i, 1, 16, RED);
       lcd_show_char(108, 250, '.', 16, 0, RED);
-      lcd_show_num(116, 250, mv_f, 2, 16, RED);
+      lcd_show_xnum(116, 250, mv_f, 2, 16, 0x80, RED);
       lcd_show_string(136, 250, 20, 16, 16, "V", RED);
     }
 
@@ -1481,7 +1860,7 @@ void StartTask05(void const * argument)
       if (bv_f < 0) bv_f = -bv_f;
       lcd_show_num(30, 328, bv_i, 2, 16, RED);
       lcd_show_char(46, 328, '.', 16, 0, RED);
-      lcd_show_num(54, 328, bv_f, 2, 16, RED);
+      lcd_show_xnum(54, 328, bv_f, 2, 16, 0x80, RED);
       lcd_show_string(78, 328, 20, 16, 16, "V", RED);
       /* I */
       int bc = (int)g_f1_battery.current;
@@ -1515,6 +1894,29 @@ void StartTask05(void const * argument)
       prev_f1_battery.status = g_f1_battery.status;
       prev_f1_battery.soc_pct = g_f1_battery.soc_pct;
       g_f1_battery_updated = 0;
+    }
+
+    /* === Section 5b: LSTM prediction from ESP32-S3 === */
+    if (local_pred.valid != prev_pred.valid ||
+        local_pred.future_pv_p != prev_pred.future_pv_p ||
+        local_pred.future_load_p != prev_pred.future_load_p ||
+        local_pred.future_home_soc != prev_pred.future_home_soc)
+    {
+      lcd_fill(pred_base_x, (uint16_t)(pred_base_y + 18U), pred_clear_x2, pred_clear_y2, WHITE);
+      if (local_pred.valid)
+      {
+        snprintf(pred_line, sizeof(pred_line), "PV:%4.1fW", (double)local_pred.future_pv_p);
+        lcd_show_string(pred_base_x, (uint16_t)(pred_base_y + 20U), 110, 16, 16, pred_line, BLUE);
+        snprintf(pred_line, sizeof(pred_line), "LD:%4.1fW", (double)local_pred.future_load_p);
+        lcd_show_string(pred_base_x, (uint16_t)(pred_base_y + 38U), 110, 16, 16, pred_line, BLUE);
+        snprintf(pred_line, sizeof(pred_line), "SOC:%4.1f%%", (double)local_pred.future_home_soc);
+        lcd_show_string(pred_base_x, (uint16_t)(pred_base_y + 56U), 110, 16, 16, pred_line, BLUE);
+      }
+      else
+      {
+        lcd_show_string(pred_base_x, (uint16_t)(pred_base_y + 20U), 110, 16, 16, "WAIT AI", GRAY);
+      }
+      prev_pred = local_pred;
     }
 
     /* === Section 6: Home dispatch MOS states === */
@@ -1573,7 +1975,7 @@ void StartTask05(void const * argument)
         lcd_show_string(s3_base_x, (uint16_t)(s3_base_y + 24U), 40, 16, 16, "V:", BLUE);
         lcd_show_num(s3_value_x, (uint16_t)(s3_base_y + 24U), s3_v_i, 1, 16, RED);
         lcd_show_char((uint16_t)(s3_value_x + 8U), (uint16_t)(s3_base_y + 24U), '.', 16, 0, RED);
-        lcd_show_num((uint16_t)(s3_value_x + 16U), (uint16_t)(s3_base_y + 24U), s3_v_f, 2, 16, RED);
+        lcd_show_xnum((uint16_t)(s3_value_x + 16U), (uint16_t)(s3_base_y + 24U), s3_v_f, 2, 16, 0x80, RED);
         lcd_show_string((uint16_t)(s3_value_x + 36U), (uint16_t)(s3_base_y + 24U), 16, 16, 16, "V", RED);
         lcd_show_string(s3_base_x, (uint16_t)(s3_base_y + 46U), 40, 16, 16, "SOC:", BLUE);
         lcd_show_num(s3_value_x, (uint16_t)(s3_base_y + 46U), s3_soc, 3, 16, RED);
@@ -1833,11 +2235,11 @@ static void OneNET_UpdateBeijingTimeBeforeMqtt(void)
     strncpy(g_beijing_time, time_text, sizeof(g_beijing_time) - 1U);
     g_beijing_time[sizeof(g_beijing_time) - 1U] = '\0';
     osMutexRelease(g_mutex);
-    // printf("ONENET: SNTP %s\r\n", time_text);
+    if (COMM_VERBOSE_LOG) printf("ONENET: SNTP %s\r\n", time_text);
   }
   else
   {
-    // printf("ONENET: SNTP failed before MQTT\r\n");
+    if (COMM_VERBOSE_LOG) printf("ONENET: SNTP failed before MQTT\r\n");
   }
 }
 
@@ -1848,19 +2250,26 @@ static void OneNET_UpdateBeijingTimeBeforeMqtt(void)
 void StartTask06(void const * argument)
 {
   ESP32S3_Data_t rx;
+  EnergyLstmPrediction_t pred;
+  EnergyLstmInput_t lstm_input;
+  SensorData_t local;
+  ESP32S3_Data_t s3_snapshot;
+  uint8_t packet_flags = 0;
   uint32_t last_udp_retry_tick = 0;
+  uint32_t last_lstm_input_tick = 0;
+  float raw_pred_home_soc = 0.0f;
   uint8_t udp_ready = 0;
 
-  if (SERIAL_VERBOSE_LOG) printf("ESP8266 UDP task start\r\n");
+  if (COMM_VERBOSE_LOG) printf("ESP8266 UDP task start\r\n");
   osDelay(2000);
   if (ESP8266_UDP_Init() == 0)
   {
-    if (SERIAL_VERBOSE_LOG) printf("ESP8266 UDP ready (USART3 PB10/PB11)\r\n");
+    if (COMM_VERBOSE_LOG) printf("ESP8266 UDP ready (USART3 PB10/PB11)\r\n");
     udp_ready = 1;
   }
   else
   {
-    if (SERIAL_VERBOSE_LOG) printf("ESP8266 UDP init failed\r\n");
+    if (COMM_VERBOSE_LOG) printf("ESP8266 UDP init failed\r\n");
     udp_ready = 0;
   }
 
@@ -1877,18 +2286,65 @@ void StartTask06(void const * argument)
       }
     }
 
-    if (udp_ready && ESP8266_UDP_PollReceive(&rx, 200) == 0)
+    memset(&rx, 0, sizeof(rx));
+    memset(&pred, 0, sizeof(pred));
+    packet_flags = 0;
+    raw_pred_home_soc = 0.0f;
+    if (udp_ready && ESP8266_UDP_PollReceiveEx(&rx, &pred, &packet_flags, 200) == 0)
     {
       osMutexWait(g_mutex, osWaitForever);
-      g_esp32s3_data = rx;
-      g_esp32s3_updated = 1;
+      if (packet_flags & 0x01U)
+      {
+        g_esp32s3_data = rx;
+        g_esp32s3_updated = 1;
+      }
+      if (packet_flags & 0x02U)
+      {
+        raw_pred_home_soc = pred.future_home_soc;
+        Energy_ClampLstmPrediction(&pred, &g_sensor);
+        g_energy_lstm_pred = pred;
+        g_energy_lstm_pred_updated = 1;
+      }
       osMutexRelease(g_mutex);
-      // if (SERIAL_VERBOSE_LOG)
-      // {
-      //   printf("ESP32S3: bat=%.3fV %.1f%% hr=%u spo2=%u state=%u\r\n",
-      //          (double)rx.bat_v, (double)rx.bat_pct,
-      //          rx.hr, rx.spo2, rx.state);
-      // }
+      if (COMM_VERBOSE_LOG && (packet_flags & 0x01U))
+      {
+        printf("ESP32S3 DATA saved: bat=%.3fV %.1f%% hr=%u spo2=%u state=%u\r\n",
+               (double)rx.bat_v, (double)rx.bat_pct,
+               rx.hr, rx.spo2, rx.state);
+      }
+      if (COMM_VERBOSE_LOG && (packet_flags & 0x02U))
+      {
+        printf("LSTM PRED saved: pv=%.3fW load=%.3fW home_soc=%.1f%% raw=%.1f%%\r\n",
+               (double)pred.future_pv_p,
+               (double)pred.future_load_p,
+               (double)pred.future_home_soc,
+               (double)raw_pred_home_soc);
+      }
+    }
+
+    if (udp_ready &&
+        (HAL_GetTick() - last_lstm_input_tick) >= ENERGY_LSTM_UDP_PERIOD_MS)
+    {
+      last_lstm_input_tick = HAL_GetTick();
+      osMutexWait(g_mutex, osWaitForever);
+      local = g_sensor;
+      s3_snapshot = g_esp32s3_data;
+      osMutexRelease(g_mutex);
+
+      Energy_FillLstmInput(&lstm_input, &local, &s3_snapshot);
+      if (COMM_VERBOSE_LOG)
+      {
+        printf("LSTM INPUT send: lux=%.1f pv=%.3fV/%.3fW home=%.3fV/%.1f%% load=%.3fW car=%u%% human=%.1f%%\r\n",
+               (double)lstm_input.lux,
+               (double)lstm_input.pv_v,
+               (double)lstm_input.pv_p,
+               (double)lstm_input.home_v,
+               (double)lstm_input.home_soc,
+               (double)lstm_input.load_p,
+               g_f1_battery.soc_pct,
+               (double)lstm_input.human_soc);
+      }
+      (void)ESP8266_UDP_SendLstmInput(&lstm_input);
     }
 
     osDelay(20);
@@ -1915,17 +2371,37 @@ void StartTask07(void const * argument)
   uint8_t pending_switch_ack = 0;
   uint8_t publish_fail_count = 0;
   uint8_t mqtt_ok = 0;
+  uint32_t last_ping_tick = 0;
 
-  osDelay(4000);
+  if (COMM_VERBOSE_LOG) printf("ONENET: wait module startup %ums\r\n", ONENET_STARTUP_DELAY_MS);
+  osDelay(ONENET_STARTUP_DELAY_MS);
 
   for (;;)
   {
     BeijingClock_Service();
 
+    /* MQTT keepalive ping — must run before any continue */
+    if (mqtt_ok && (HAL_GetTick() - last_ping_tick) >= ONENET_PING_INTERVAL_MS)
+    {
+      last_ping_tick = HAL_GetTick();
+      if (OneNET_MQTT_Ping() != 0)
+      {
+        if (++publish_fail_count >= 3U)
+        {
+          mqtt_ok = 0;
+          publish_fail_count = 0;
+        }
+      }
+      else
+      {
+        publish_fail_count = 0;
+      }
+    }
+
     if (!mqtt_ok)
     {
       g_onenet_online = 0;
-      // printf("ONENET: init USART2 cloud link\r\n");
+      if (COMM_VERBOSE_LOG) printf("ONENET: init USART2 cloud link\r\n");
       if (ESP8266_ONENET_AT_InitWiFi() == 0)
       {
         /* Get SNTP while no MQTT TCP connection is open. Some ESP8266 AT
@@ -1935,7 +2411,7 @@ void StartTask07(void const * argument)
       }
       else
       {
-        // printf("ONENET: WiFi init failed on USART2\r\n");
+        if (COMM_VERBOSE_LOG) printf("ONENET: WiFi init failed on USART2\r\n");
         osDelay(5000);
         continue;
       }
@@ -1955,11 +2431,12 @@ void StartTask07(void const * argument)
         prev_qi_on = 0xFFU;
         pending_switch_ack = 1U;
         publish_fail_count = 0;
-        // printf("ONENET: mqtt online on USART2\r\n");
+        last_ping_tick = HAL_GetTick();
+        if (COMM_VERBOSE_LOG) printf("ONENET: mqtt online on USART2\r\n");
       }
       else
       {
-        // printf("ONENET: mqtt setup failed on USART2\r\n");
+        if (COMM_VERBOSE_LOG) printf("ONENET: mqtt setup failed on USART2\r\n");
         ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_CLOSE, ESP8266_AT_RSP_OK, 1000);
         osDelay(5000);
         continue;
@@ -1991,6 +2468,7 @@ void StartTask07(void const * argument)
       OneNET_FillUploadData(&upload, &local, &s3_snapshot);
       if (OneNET_Upload(&upload) != 0)
       {
+        if (COMM_VERBOSE_LOG) printf("ONENET: full upload failed count=%u\r\n", publish_fail_count + 1U);
         if (++publish_fail_count >= 3U)
         {
           mqtt_ok = 0;
@@ -2019,6 +2497,7 @@ void StartTask07(void const * argument)
       {
         if (OneNET_UploadSwitchStates(fan_on, led_on, rigid_on, qi_on) != 0)
         {
+          if (COMM_VERBOSE_LOG) printf("ONENET: switch upload failed count=%u\r\n", publish_fail_count + 1U);
           if (++publish_fail_count >= 3U)
           {
             mqtt_ok = 0;

@@ -1,0 +1,1 @@
+﻿row_index,scene_id,scene_label,real_hour,tick_ms,kind,expected_by_code_logic,observed,lux,pv_v,pv_p,home_v,home_soc,load_p,car_soc,pvsrc,hsrc,v2h,hchg,cchg

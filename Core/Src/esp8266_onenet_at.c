@@ -6,28 +6,33 @@
 #include <string.h>
 
 #define ESP8266_ONENET_AT_DMA_RX_SIZE 512
-#define ESP8266_ONENET_AT_RSP_SIZE    256
-#define ESP8266_ONENET_AT_VERBOSE_LOG 1U
+#define ESP8266_ONENET_AT_RSP_SIZE    512
+#define ESP8266_ONENET_AT_VERBOSE_LOG 0U
+#define ESP8266_ONENET_AT_BOOT_WAIT_MS 1500U
+#define ESP8266_ONENET_AT_ESCAPE_WAIT_MS 1200U
+#define ESP8266_ONENET_AT_READY_RETRY 5U
 
 static uint8_t g_onenet_dma_rx[ESP8266_ONENET_AT_DMA_RX_SIZE];
 static uint16_t g_onenet_dma_old_pos = 0;
 static uint8_t g_onenet_dma_started = 0;
 
-uint8_t ESP8266_ONENET_AT_StartDma(void)
+static void ESP8266_ONENET_AT_ClearUartErrors(void)
 {
-    if (g_onenet_dma_started)
-    {
-        return 0;
-    }
-
-    HAL_UART_AbortReceive(&huart2);
-    HAL_UART_AbortTransmit(&huart2);
     __HAL_UART_CLEAR_OREFLAG(&huart2);
     __HAL_UART_CLEAR_FEFLAG(&huart2);
     __HAL_UART_CLEAR_NEFLAG(&huart2);
+    __HAL_UART_CLEAR_PEFLAG(&huart2);
+    huart2.ErrorCode = HAL_UART_ERROR_NONE;
+}
+
+static uint8_t ESP8266_ONENET_AT_RestartDma(void)
+{
+    HAL_UART_AbortReceive(&huart2);
+    ESP8266_ONENET_AT_ClearUartErrors();
 
     if (HAL_UART_Receive_DMA(&huart2, g_onenet_dma_rx, ESP8266_ONENET_AT_DMA_RX_SIZE) != HAL_OK)
     {
+        g_onenet_dma_started = 0;
         return 1;
     }
 
@@ -37,11 +42,34 @@ uint8_t ESP8266_ONENET_AT_StartDma(void)
     return 0;
 }
 
+static uint8_t ESP8266_ONENET_AT_EnsureDma(void)
+{
+    if (!g_onenet_dma_started ||
+        huart2.RxState != HAL_UART_STATE_BUSY_RX ||
+        huart2.ErrorCode != HAL_UART_ERROR_NONE)
+    {
+        return ESP8266_ONENET_AT_RestartDma();
+    }
+
+    return 0;
+}
+
+uint8_t ESP8266_ONENET_AT_StartDma(void)
+{
+    if (g_onenet_dma_started)
+    {
+        return ESP8266_ONENET_AT_EnsureDma();
+    }
+
+    HAL_UART_AbortTransmit(&huart2);
+    return ESP8266_ONENET_AT_RestartDma();
+}
+
 void ESP8266_ONENET_AT_ClearRx(void)
 {
     uint16_t pos;
 
-    if (!g_onenet_dma_started)
+    if (ESP8266_ONENET_AT_EnsureDma() != 0)
     {
         return;
     }
@@ -59,7 +87,7 @@ static int16_t ESP8266_ONENET_AT_ReadDmaByte(void)
     uint16_t pos;
     uint8_t ch;
 
-    if (!g_onenet_dma_started)
+    if (ESP8266_ONENET_AT_EnsureDma() != 0)
     {
         return -1;
     }
@@ -86,12 +114,20 @@ static int16_t ESP8266_ONENET_AT_ReadDmaByte(void)
 
 uint8_t ESP8266_ONENET_AT_SendBytes(const uint8_t *data, uint16_t len)
 {
+    uint8_t ret;
+
     if (data == NULL || len == 0U)
     {
         return 0;
     }
 
-    return HAL_UART_Transmit(&huart2, (uint8_t *)data, len, 1000U) == HAL_OK ? 0U : 1U;
+    (void)ESP8266_ONENET_AT_EnsureDma();
+    ret = HAL_UART_Transmit(&huart2, (uint8_t *)data, len, 1000U) == HAL_OK ? 0U : 1U;
+    if (huart2.ErrorCode != HAL_UART_ERROR_NONE)
+    {
+        (void)ESP8266_ONENET_AT_RestartDma();
+    }
+    return ret;
 }
 
 uint8_t ESP8266_ONENET_AT_SendRaw(const char *s)
@@ -139,25 +175,61 @@ uint16_t ESP8266_ONENET_AT_ReadUntil(char *buf, uint16_t len, const char *expect
 uint8_t ESP8266_ONENET_AT_SendCmd(const char *cmd, const char *expect, uint32_t timeout_ms)
 {
     char rx[ESP8266_ONENET_AT_RSP_SIZE];
+    uint16_t rx_len;
+    uint8_t retry;
 
-    ESP8266_ONENET_AT_ClearRx();
-    if (ESP8266_ONENET_AT_SendRaw(cmd) != 0 || ESP8266_ONENET_AT_SendRaw("\r\n") != 0)
+    rx[0] = '\0';
+    for (retry = 0; retry < 2U; retry++)
     {
-        return 1;
-    }
+        ESP8266_ONENET_AT_ClearRx();
+        if (ESP8266_ONENET_AT_SendRaw(cmd) != 0 || ESP8266_ONENET_AT_SendRaw("\r\n") != 0)
+        {
+            (void)ESP8266_ONENET_AT_RestartDma();
+            HAL_Delay(50);
+            continue;
+        }
 
-    ESP8266_ONENET_AT_ReadUntil(rx, sizeof(rx), expect, timeout_ms);
-    if (expect == NULL || strstr(rx, expect) != NULL)
-    {
-        return 0;
-    }
-    if (strcmp(cmd, ESP8266_AT_CMD_CLOSE) == 0 && strstr(rx, ESP8266_AT_RSP_ERROR) != NULL)
-    {
-        return 0;
+        rx_len = ESP8266_ONENET_AT_ReadUntil(rx, sizeof(rx), expect, timeout_ms);
+        if (expect == NULL || strstr(rx, expect) != NULL)
+        {
+            return 0;
+        }
+        if (strcmp(cmd, ESP8266_AT_CMD_CLOSE) == 0 && strstr(rx, ESP8266_AT_RSP_ERROR) != NULL)
+        {
+            return 0;
+        }
+
+        if (rx_len != 0U || retry != 0U)
+        {
+            break;
+        }
+
+        if (ESP8266_ONENET_AT_VERBOSE_LOG)
+        {
+            printf("ONENET AT empty rsp, restart USART2 RX DMA and retry cmd=[%s]\r\n", cmd);
+        }
+        (void)ESP8266_ONENET_AT_RestartDma();
+        HAL_Delay(100);
     }
 
     if (ESP8266_ONENET_AT_VERBOSE_LOG) printf("ONENET AT fail cmd=[%s] rsp=[%s]\r\n", cmd, rx);
     return 1;
+}
+
+static void ESP8266_ONENET_AT_PrepareBeforeInit(void)
+{
+    (void)ESP8266_ONENET_AT_StartDma();
+
+    HAL_Delay(ESP8266_ONENET_AT_BOOT_WAIT_MS);
+    ESP8266_ONENET_AT_ClearRx();
+
+    /* Leave possible transparent transmission mode from a previous run. */
+    (void)ESP8266_ONENET_AT_SendRaw("+++");
+    HAL_Delay(ESP8266_ONENET_AT_ESCAPE_WAIT_MS);
+    ESP8266_ONENET_AT_ClearRx();
+
+    HAL_Delay(200U);
+    ESP8266_ONENET_AT_ClearRx();
 }
 
 uint8_t ESP8266_ONENET_AT_JoinAp(const char *ssid, const char *password)
@@ -347,6 +419,7 @@ uint8_t ESP8266_ONENET_AT_GetSntpTime(char *buf, uint16_t len)
     char *e;
     uint16_t copy_len;
     uint8_t cfg_ok = 0;
+    uint8_t retry;
 
     if (buf == NULL || len == 0U)
     {
@@ -354,12 +427,12 @@ uint8_t ESP8266_ONENET_AT_GetSntpTime(char *buf, uint16_t len)
     }
     buf[0] = '\0';
 
-    if (ESP8266_ONENET_AT_SendCmd("AT+CIPSNTPCFG=1,8", ESP8266_AT_RSP_OK, 2000) == 0)
+    if (ESP8266_ONENET_AT_SendCmd("AT+CIPSNTPCFG=1,8,\"ntp.aliyun.com\",\"cn.ntp.org.cn\"",
+                                  ESP8266_AT_RSP_OK, 3000) == 0)
     {
         cfg_ok = 1;
     }
-    else if (ESP8266_ONENET_AT_SendCmd("AT+CIPSNTPCFG=1,8,\"ntp.aliyun.com\",\"cn.ntp.org.cn\"",
-                                       ESP8266_AT_RSP_OK, 2000) == 0)
+    else if (ESP8266_ONENET_AT_SendCmd("AT+CIPSNTPCFG=1,8", ESP8266_AT_RSP_OK, 3000) == 0)
     {
         cfg_ok = 1;
     }
@@ -370,63 +443,93 @@ uint8_t ESP8266_ONENET_AT_GetSntpTime(char *buf, uint16_t len)
         if (ESP8266_ONENET_AT_SendRaw("AT+GMR\r\n") == 0)
         {
             ESP8266_ONENET_AT_ReadUntil(rx, sizeof(rx), ESP8266_AT_RSP_OK, 2000);
-            if (ESP8266_ONENET_AT_VERBOSE_LOG) printf("ONENET ESP8266 GMR=[%s]\r\n", rx);
+            if (ESP8266_ONENET_AT_VERBOSE_LOG) printf("ONENET SNTP cfg failed, GMR=[%s]\r\n", rx);
         }
         return 1;
     }
 
-    HAL_Delay(3000);
-    ESP8266_ONENET_AT_ClearRx();
-    if (ESP8266_ONENET_AT_SendRaw("AT+CIPSNTPTIME?\r\n") != 0)
+    for (retry = 0; retry < 5U; retry++)
     {
-        return 1;
-    }
-    ESP8266_ONENET_AT_ReadUntil(rx, sizeof(rx), ESP8266_AT_RSP_OK, 5000);
+        HAL_Delay(3000);
+        ESP8266_ONENET_AT_ClearRx();
+        if (ESP8266_ONENET_AT_SendRaw("AT+CIPSNTPTIME?\r\n") != 0)
+        {
+            return 1;
+        }
+        ESP8266_ONENET_AT_ReadUntil(rx, sizeof(rx), ESP8266_AT_RSP_OK, 5000);
+        if (ESP8266_ONENET_AT_VERBOSE_LOG) printf("ONENET SNTP try %u raw=[%s]\r\n", retry + 1U, rx);
 
-    p = strstr(rx, "+CIPSNTPTIME:");
-    if (p == NULL)
-    {
-        if (ESP8266_ONENET_AT_VERBOSE_LOG) printf("ONENET SNTP raw=[%s]\r\n", rx);
-        return 1;
-    }
-    p += strlen("+CIPSNTPTIME:");
-    while (*p == ' ') p++;
-    e = strpbrk(p, "\r\n");
-    if (e == NULL)
-    {
-        e = p + strlen(p);
+        p = strstr(rx, "+CIPSNTPTIME:");
+        if (p == NULL)
+        {
+            continue;
+        }
+        p += strlen("+CIPSNTPTIME:");
+        while (*p == ' ') p++;
+        e = strpbrk(p, "\r\n");
+        if (e == NULL)
+        {
+            e = p + strlen(p);
+        }
+
+        if (strstr(p, "1970") != NULL)
+        {
+            continue;
+        }
+
+        copy_len = (uint16_t)(e - p);
+        if (copy_len >= len)
+        {
+            copy_len = (uint16_t)(len - 1U);
+        }
+        memcpy(buf, p, copy_len);
+        buf[copy_len] = '\0';
+        return 0;
     }
 
-    copy_len = (uint16_t)(e - p);
-    if (copy_len >= len)
-    {
-        copy_len = (uint16_t)(len - 1U);
-    }
-    memcpy(buf, p, copy_len);
-    buf[copy_len] = '\0';
-    return 0;
+    return 1;
 }
 
 uint8_t ESP8266_ONENET_AT_InitWiFi(void)
 {
+    uint8_t retry;
+    uint8_t at_ready = 0U;
+
     if (ESP8266_ONENET_AT_StartDma() != 0)
     {
         return 1;
     }
 
-    if (ESP8266_ONENET_AT_VERBOSE_LOG) printf("ONENET ESP8266: start on USART2 PA2/PA3\r\n");
-    if (ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_TEST, ESP8266_AT_RSP_OK, 1000) != 0)
+    ESP8266_ONENET_AT_PrepareBeforeInit();
+
+    if (ESP8266_ONENET_AT_VERBOSE_LOG)
     {
-        HAL_Delay(300U);
-        if (ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_TEST, ESP8266_AT_RSP_OK, 1500) != 0)
-        {
-            if (ESP8266_ONENET_AT_VERBOSE_LOG)
-            {
-                printf("ONENET ESP8266: no AT response on USART2, check PA2->RX, PA3<-TX, GND and 3.3V power\r\n");
-            }
-            return 1;
-        }
+        printf("ONENET ESP8266: wait ready on USART2 PA2/PA3\r\n");
     }
+
+    for (retry = 0U; retry < ESP8266_ONENET_AT_READY_RETRY; retry++)
+    {
+        uint32_t timeout_ms = 1000U + (uint32_t)retry * 500U;
+
+        if (ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_TEST, ESP8266_AT_RSP_OK, timeout_ms) == 0)
+        {
+            at_ready = 1U;
+            break;
+        }
+
+        HAL_Delay(500U);
+        ESP8266_ONENET_AT_ClearRx();
+    }
+
+    if (!at_ready)
+    {
+        if (ESP8266_ONENET_AT_VERBOSE_LOG)
+        {
+            printf("ONENET ESP8266: no AT response after warmup, check USART2 wiring/power\r\n");
+        }
+        return 1;
+    }
+
     ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_ECHO_OFF, ESP8266_AT_RSP_OK, 1000);
     ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_STATION_MODE, ESP8266_AT_RSP_OK, 1000);
     ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_AUTO_CONN_OFF, ESP8266_AT_RSP_OK, 1000);

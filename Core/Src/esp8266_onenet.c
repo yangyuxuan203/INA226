@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define ONENET_VERBOSE_LOG 1U
+#define ONENET_VERBOSE_LOG 0U
 #define ONENET_RX_BUF_SIZE 768U
 
 static uint16_t s_onenet_msg_id = 1U;
@@ -371,6 +371,12 @@ uint8_t OneNET_MQTT_Process(OneNET_Control_t *ctrl, uint32_t timeout_ms)
             {
                 if (ONENET_VERBOSE_LOG) printf("ONENET: CTRL topic=%s payload=%s\r\n", topic, payload);
                 ret = OneNET_ParseControlPayload((const char *)payload, ctrl);
+                if (ONENET_VERBOSE_LOG)
+                {
+                    printf("ONENET: CTRL parse ret=%u feng=%d led=%d load=%d qi=%d updated=%u\r\n",
+                           ret, ctrl->home_feng, ctrl->home_led,
+                           ctrl->home_load, ctrl->qi, ctrl->updated);
+                }
             }
         }
     }
@@ -425,19 +431,19 @@ static uint8_t OneNET_PublishPropertyPayload(const char *payload)
     memcpy(&pkt._data[pkt._len], payload, body_len);
     pkt._len += body_len;
 
-    // if (ONENET_VERBOSE_LOG)
-    // {
-    //     printf("ONENET JSON len=%u: %s\r\n", body_len, payload);
-    // }
+    if (ONENET_VERBOSE_LOG)
+    {
+        printf("ONENET TX JSON len=%u\r\n", body_len);
+    }
 
     uint8_t send_ret = OneNET_SendMqttPacket(&pkt);
 
 
     
-    // if (ONENET_VERBOSE_LOG)
-    // {
-    //     printf("ONENET JSON send ret=%u\r\n", send_ret);
-    // }
+    if (ONENET_VERBOSE_LOG)
+    {
+        printf("ONENET TX ret=%u\r\n", send_ret);
+    }
     return send_ret;
 }
 

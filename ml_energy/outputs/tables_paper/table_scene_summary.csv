@@ -1,0 +1,7 @@
+﻿scene_label,cleaned_rows,real_start_hour,real_duration_h,avg_lux,pvsrc_pct,hsrc_pct,hchg_pct,cchg_pct,v2h_pct,home_soc_start,home_soc_end
+T1_night_no_pv,289,0.0,6.0,81.369,0.0,100.0,0.0,0.0,0.0,80.125,66.812
+T2_dawn_weak_light,186,6.0,6.0,1102.02,54.301,45.699,52.688,0.0,0.0,66.625,79.062
+T3_noon_strong_light,238,12.0,6.0,2356.966,100.0,0.0,100.0,0.0,0.0,80.188,88.688
+T4_home_full_car_charge,106,12.0,2.25,2500.0,100.0,0.0,0.0,100.0,0.0,93.1,90.575
+T5_dusk_load_increase,243,18.0,6.0,1033.545,72.428,27.572,56.79,0.0,0.0,90.675,66.75
+T6_low_home_v2h,80,0.0,1.5,60.493,0.0,0.0,0.0,0.0,100.0,0.8,0.0

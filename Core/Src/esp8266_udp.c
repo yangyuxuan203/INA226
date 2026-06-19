@@ -55,6 +55,19 @@ static uint8_t ESP8266_JSON_GetNumber(cJSON *root, const char *name, double *out
     return 0;
 }
 
+static uint8_t ESP8266_JSON_HasNumber(cJSON *root, const char *name)
+{
+    cJSON *item;
+
+    if (root == NULL || name == NULL)
+    {
+        return 0;
+    }
+
+    item = cJSON_GetObjectItem(root, name);
+    return (item != NULL && item->type == cJSON_Number) ? 1U : 0U;
+}
+
 uint8_t ESP8266_UDP_Init(void)
 {
     char ip_rsp[256];
@@ -124,11 +137,22 @@ uint8_t ESP8266_UDP_Init(void)
 
 uint8_t ESP8266_UDP_PollReceive(ESP32S3_Data_t *data, uint32_t timeout_ms)
 {
-    char payload[192];
+    uint8_t flags = 0;
+
+    return ESP8266_UDP_PollReceiveEx(data, NULL, &flags, timeout_ms);
+}
+
+uint8_t ESP8266_UDP_PollReceiveEx(ESP32S3_Data_t *data,
+                                  EnergyLstmPrediction_t *pred,
+                                  uint8_t *packet_flags,
+                                  uint32_t timeout_ms)
+{
+    char payload[384];
     cJSON *root;
     double value;
+    uint8_t parsed_any = 0;
 
-    if (data == NULL)
+    if (data == NULL && pred == NULL)
     {
         return 1;
     }
@@ -147,6 +171,7 @@ uint8_t ESP8266_UDP_PollReceive(ESP32S3_Data_t *data, uint32_t timeout_ms)
     {
         if (ESP8266_UDP_VERBOSE_LOG) printf("ESP8266: peer %s:%u\r\n", g_esp32s3_ip, g_esp32s3_src_port);
     }
+    if (ESP8266_UDP_VERBOSE_LOG) printf("UDP RX: %s\r\n", payload);
 
     root = cJSON_Parse(payload);
     if (root == NULL)
@@ -154,30 +179,88 @@ uint8_t ESP8266_UDP_PollReceive(ESP32S3_Data_t *data, uint32_t timeout_ms)
         return 1;
     }
 
-    if (ESP8266_JSON_GetNumber(root, "bat_v", &value) != 0) goto parse_fail;
-    data->bat_v = (float)value;
+    if (packet_flags != NULL)
+    {
+        *packet_flags = 0;
+    }
 
-    if (ESP8266_JSON_GetNumber(root, "bat_pct", &value) != 0) goto parse_fail;
-    data->bat_pct = (float)value;
+    if (data != NULL &&
+        ESP8266_JSON_HasNumber(root, "bat_v") &&
+        ESP8266_JSON_HasNumber(root, "bat_pct") &&
+        ESP8266_JSON_HasNumber(root, "state"))
+    {
+        if (ESP8266_JSON_GetNumber(root, "bat_v", &value) != 0) goto parse_fail;
+        data->bat_v = (float)value;
 
-    if (ESP8266_JSON_GetNumber(root, "hr", &value) != 0) goto parse_fail;
-    if (value < 0.0) value = 0.0;
-    if (value > 65535.0) value = 65535.0;
-    data->hr = (uint16_t)(value + 0.5);
+        if (ESP8266_JSON_GetNumber(root, "bat_pct", &value) != 0) goto parse_fail;
+        data->bat_pct = (float)value;
 
-    if (ESP8266_JSON_GetNumber(root, "spo2", &value) != 0) goto parse_fail;
-    if (value < 0.0) value = 0.0;
-    if (value > 65535.0) value = 65535.0;
-    data->spo2 = (uint16_t)(value + 0.5);
+        if (ESP8266_JSON_GetNumber(root, "hr", &value) == 0)
+        {
+            if (value < 0.0) value = 0.0;
+            if (value > 65535.0) value = 65535.0;
+            data->hr = (uint16_t)(value + 0.5);
+        }
+        else
+        {
+            data->hr = 0;
+        }
 
-    if (ESP8266_JSON_GetNumber(root, "state", &value) != 0) goto parse_fail;
-    if (value < 0.0) value = 0.0;
-    if (value > 255.0) value = 255.0;
-    data->state = (uint8_t)(value + 0.5);
-    data->valid = 1;
+        if (ESP8266_JSON_GetNumber(root, "spo2", &value) == 0)
+        {
+            if (value < 0.0) value = 0.0;
+            if (value > 65535.0) value = 65535.0;
+            data->spo2 = (uint16_t)(value + 0.5);
+        }
+        else
+        {
+            data->spo2 = 0;
+        }
+
+        if (ESP8266_JSON_GetNumber(root, "state", &value) != 0) goto parse_fail;
+        if (value < 0.0) value = 0.0;
+        if (value > 255.0) value = 255.0;
+        data->state = (uint8_t)(value + 0.5);
+        data->valid = 1;
+        parsed_any = 1;
+        if (packet_flags != NULL) *packet_flags |= 0x01U;
+        if (ESP8266_UDP_VERBOSE_LOG)
+        {
+            printf("UDP RX S3: bat=%.3fV soc=%.1f%% hr=%u spo2=%u state=%u\r\n",
+                   (double)data->bat_v, (double)data->bat_pct,
+                   data->hr, data->spo2, data->state);
+        }
+    }
+
+    if (pred != NULL &&
+        ESP8266_JSON_HasNumber(root, "future_pv_p") &&
+        ESP8266_JSON_HasNumber(root, "future_load_p") &&
+        ESP8266_JSON_HasNumber(root, "future_home_soc"))
+    {
+        if (ESP8266_JSON_GetNumber(root, "future_pv_p", &value) != 0) goto parse_fail;
+        pred->future_pv_p = (float)value;
+
+        if (ESP8266_JSON_GetNumber(root, "future_load_p", &value) != 0) goto parse_fail;
+        pred->future_load_p = (float)value;
+
+        if (ESP8266_JSON_GetNumber(root, "future_home_soc", &value) != 0) goto parse_fail;
+        pred->future_home_soc = (float)value;
+
+        pred->tick_ms = HAL_GetTick();
+        pred->valid = 1U;
+        parsed_any = 1;
+        if (packet_flags != NULL) *packet_flags |= 0x02U;
+        if (ESP8266_UDP_VERBOSE_LOG)
+        {
+            printf("UDP RX LSTM: pv=%.3fW load=%.3fW home_soc=%.1f%%\r\n",
+                   (double)pred->future_pv_p,
+                   (double)pred->future_load_p,
+                   (double)pred->future_home_soc);
+        }
+    }
 
     cJSON_Delete(root);
-    return 0;
+    return parsed_any ? 0U : 1U;
 
 parse_fail:
     cJSON_Delete(root);
@@ -217,6 +300,74 @@ uint8_t ESP8266_UDP_SendTelemetry(float lux, float home_load_power_w, float pv_p
 
     ret = ESP8266_AT_SendDataTo((const uint8_t *)json, (uint16_t)strlen(json),
                                 g_esp32s3_ip, ESP32S3_RX_PORT);
+    vPortFree(json);
+    return ret;
+}
+
+uint8_t ESP8266_UDP_SendLstmInput(const EnergyLstmInput_t *input)
+{
+    cJSON *root;
+    char *json;
+    const char *dst_ip;
+    uint8_t ret;
+
+    if (input == NULL)
+    {
+        return 1;
+    }
+
+    ESP8266_JSON_InitHooks();
+
+    root = cJSON_CreateObject();
+    if (root == NULL)
+    {
+        return 1;
+    }
+
+    cJSON_AddStringToObject(root, "type", "lstm_input");
+    cJSON_AddNumberToObject(root, "real_hour_sin", input->real_hour_sin);
+    cJSON_AddNumberToObject(root, "real_hour_cos", input->real_hour_cos);
+    cJSON_AddNumberToObject(root, "lux", input->lux);
+    cJSON_AddNumberToObject(root, "pv_v", input->pv_v);
+    cJSON_AddNumberToObject(root, "pv_p", input->pv_p);
+    cJSON_AddNumberToObject(root, "home_v", input->home_v);
+    cJSON_AddNumberToObject(root, "home_soc", input->home_soc);
+    cJSON_AddNumberToObject(root, "load_p", input->load_p);
+    cJSON_AddNumberToObject(root, "car_soc", input->car_soc);
+    cJSON_AddNumberToObject(root, "human_soc", input->human_soc);
+    cJSON_AddNumberToObject(root, "pvsrc", input->pvsrc);
+    cJSON_AddNumberToObject(root, "hsrc", input->hsrc);
+    cJSON_AddNumberToObject(root, "rigid", input->rigid);
+    cJSON_AddNumberToObject(root, "led", input->led);
+    cJSON_AddNumberToObject(root, "fan", input->fan);
+    cJSON_AddNumberToObject(root, "qi", input->qi);
+    cJSON_AddNumberToObject(root, "hchg", input->hchg);
+    cJSON_AddNumberToObject(root, "cchg", input->cchg);
+    cJSON_AddNumberToObject(root, "v2h", input->v2h);
+
+    json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json == NULL)
+    {
+        return 1;
+    }
+
+    dst_ip = (g_esp32s3_ip[0] != '\0') ? g_esp32s3_ip : "255.255.255.255";
+
+    if (g_esp32s3_ip[0] != '\0')
+    {
+        ret = ESP8266_AT_SendDataTo((const uint8_t *)json, (uint16_t)strlen(json),
+                                    dst_ip, ESP32S3_RX_PORT);
+    }
+    else
+    {
+        ret = ESP8266_AT_SendData((const uint8_t *)json, (uint16_t)strlen(json));
+    }
+    if (ESP8266_UDP_VERBOSE_LOG)
+    {
+        printf("UDP TX LSTM ret=%u dst=%s:%u peer_port=%u json=%s\r\n",
+               ret, dst_ip, ESP32S3_RX_PORT, g_esp32s3_src_port, json);
+    }
     vPortFree(json);
     return ret;
 }

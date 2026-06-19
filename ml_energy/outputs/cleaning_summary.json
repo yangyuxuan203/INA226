@@ -1,0 +1,112 @@
+{
+  "cleaned_rows": 1142,
+  "training_rows_1min_real_time": 3015,
+  "sequences": 2817,
+  "feature_count": 19,
+  "target_count": 3,
+  "removed_input_columns": [
+    "s3_hr",
+    "s3_spo2"
+  ],
+  "cleaning_changes": [
+    {
+      "type": "drop_warmup",
+      "rows": 18,
+      "reason": "first 30s are startup transients"
+    },
+    {
+      "type": "recalculate_home_soc_from_6p5v_cutoff",
+      "rows": 971,
+      "reason": "home battery output stops near 6.5V, old 6.0V SOC table overstated low SOC"
+    }
+  ],
+  "training_rule_fixes": [],
+  "logic_difference_counts_before_fix": {},
+  "scene_summary": {
+    "T1_night_no_pv": {
+      "rows_cleaned": 289,
+      "real_start_hour": 0.0,
+      "real_duration_h": 6.0,
+      "avg_lux": 81.369,
+      "pvsrc_pct": 0.0,
+      "hsrc_pct": 100.0,
+      "v2h_pct": 0.0,
+      "hchg_pct": 0.0,
+      "cchg_pct": 0.0,
+      "home_soc_start": 80.125,
+      "home_soc_end": 66.812
+    },
+    "T2_dawn_weak_light": {
+      "rows_cleaned": 186,
+      "real_start_hour": 6.0,
+      "real_duration_h": 6.0,
+      "avg_lux": 1102.02,
+      "pvsrc_pct": 54.301,
+      "hsrc_pct": 45.699,
+      "v2h_pct": 0.0,
+      "hchg_pct": 52.688,
+      "cchg_pct": 0.0,
+      "home_soc_start": 66.625,
+      "home_soc_end": 79.062
+    },
+    "T3_noon_strong_light": {
+      "rows_cleaned": 238,
+      "real_start_hour": 12.0,
+      "real_duration_h": 6.0,
+      "avg_lux": 2356.966,
+      "pvsrc_pct": 100.0,
+      "hsrc_pct": 0.0,
+      "v2h_pct": 0.0,
+      "hchg_pct": 100.0,
+      "cchg_pct": 0.0,
+      "home_soc_start": 80.188,
+      "home_soc_end": 88.688
+    },
+    "T4_home_full_car_charge": {
+      "rows_cleaned": 106,
+      "real_start_hour": 12.0,
+      "real_duration_h": 2.25,
+      "avg_lux": 2500.0,
+      "pvsrc_pct": 100.0,
+      "hsrc_pct": 0.0,
+      "v2h_pct": 0.0,
+      "hchg_pct": 0.0,
+      "cchg_pct": 100.0,
+      "home_soc_start": 93.1,
+      "home_soc_end": 90.575
+    },
+    "T5_dusk_load_increase": {
+      "rows_cleaned": 243,
+      "real_start_hour": 18.0,
+      "real_duration_h": 6.0,
+      "avg_lux": 1033.545,
+      "pvsrc_pct": 72.428,
+      "hsrc_pct": 27.572,
+      "v2h_pct": 0.0,
+      "hchg_pct": 56.79,
+      "cchg_pct": 0.0,
+      "home_soc_start": 90.675,
+      "home_soc_end": 66.75
+    },
+    "T6_low_home_v2h": {
+      "rows_cleaned": 80,
+      "real_start_hour": 0.0,
+      "real_duration_h": 1.5,
+      "avg_lux": 60.493,
+      "pvsrc_pct": 0.0,
+      "hsrc_pct": 0.0,
+      "v2h_pct": 100.0,
+      "hchg_pct": 0.0,
+      "cchg_pct": 0.0,
+      "home_soc_start": 0.8,
+      "home_soc_end": 0.0
+    }
+  },
+  "notes": [
+    "No synthetic cross-scene transition rows are generated.",
+    "Real-time features map compressed experimental time to scene time windows.",
+    "Future targets use a short future-window average plus PV/SOC slew limiting to avoid training on relay/probe or voltage-step spikes.",
+    "Stable night physics augmentation covers measured 0.9-1.7W home-battery load without teaching SOC cliff drops.",
+    "logic_difference_report.csv records observed differences before training-state fixes."
+  ]
+}
