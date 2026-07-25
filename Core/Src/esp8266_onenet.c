@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define ONENET_VERBOSE_LOG 0U
+#define ONENET_VERBOSE_LOG 1U
 #define ONENET_RX_BUF_SIZE 768U
 
 static uint16_t s_onenet_msg_id = 1U;
@@ -356,11 +356,13 @@ uint8_t OneNET_MQTT_Process(OneNET_Control_t *ctrl, uint32_t timeout_ms)
         return 1;
     }
 
-    if (ESP8266_ONENET_AT_WaitTcpPacket(rx, sizeof(rx), &rx_len, timeout_ms) != 0)
+    ret = ESP8266_ONENET_AT_WaitTcpPacket(rx, sizeof(rx), &rx_len, timeout_ms);
+    if (ret != 0)
     {
-        return 1;
+        return ret;
     }
     rx[rx_len] = 0U;
+    ret = 1;
 
     type = MQTT_UnPacketRecv(rx);
     if (type == MQTT_PKT_PUBLISH)

@@ -26,7 +26,7 @@
             ]
         },
         {
-            "name": "STM32F4",
+            "name": "STM32F4 Main",
             "type": "stlinkgdbtarget",
             "request": "launch",
             "cwd": "${workspaceFolder}",
@@ -34,7 +34,7 @@
             "runEntry": "main",
             "imagesAndSymbols": [
                 {
-                    "imageFileName": "${workspaceFolder}/build/Debug/STM32F4_MAIN.elf"
+                    "imageFileName": "${workspaceFolder}/build/Debug/INA226.elf"
                 }
             ],
             "verbose": false

@@ -5,9 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define ESP8266_ONENET_AT_DMA_RX_SIZE 512
-#define ESP8266_ONENET_AT_RSP_SIZE    512
-#define ESP8266_ONENET_AT_VERBOSE_LOG 0U
+#define ESP8266_ONENET_AT_DMA_RX_SIZE 1024
+#define ESP8266_ONENET_AT_RSP_SIZE    768
+#define ESP8266_ONENET_AT_VERBOSE_LOG 1U
 #define ESP8266_ONENET_AT_BOOT_WAIT_MS 1500U
 #define ESP8266_ONENET_AT_ESCAPE_WAIT_MS 1200U
 #define ESP8266_ONENET_AT_READY_RETRY 5U
@@ -360,6 +360,17 @@ uint8_t ESP8266_ONENET_AT_WaitTcpPacket(uint8_t *payload, uint16_t len, uint16_t
             memmove(header, &header[1], sizeof(header) - 2U);
             header[sizeof(header) - 2U] = (char)ch;
             header[sizeof(header) - 1U] = '\0';
+        }
+
+        if (strstr(header, "WIFI DISCONNECT") != NULL ||
+            strstr(header, "CLOSED") != NULL ||
+            strstr(header, "link is not valid") != NULL)
+        {
+            if (ESP8266_ONENET_AT_VERBOSE_LOG)
+            {
+                printf("ONENET AT link event=[%s]\r\n", header);
+            }
+            return 2;
         }
 
         colon = strchr(header, ':');

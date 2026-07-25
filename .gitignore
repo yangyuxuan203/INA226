@@ -1,3 +1,35 @@
 build
 mx.scratch
 !.settings
+
+# Local reference material
+/references/
+/参考资料/
+/LVGL综合实验(800x448)/
+/docs/
+/ml_energy/
+
+# Legacy or example code not linked into the firmware
+/device/
+/MQTT/sample.c
+/MQTT/SDK使用说明.txt
+/onenet/inc/onenet.h
+/onenet/src/onenet.c
+
+# Local tool-specific settings
+/.claude/
+/.clangd
+
+# Reference documents kept at the repository root
+/*.pdf
+/*.doc
+/*.docx
+/*.ppt
+/*.pptx
+
+# Experiment data and archives kept at the repository root
+/*.csv
+/*.CSV
+/*.xls
+/*.xlsx
+/*.zip
