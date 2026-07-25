@@ -1,0 +1,8 @@
+#ifndef WIFI_CONFIG_H
+#define WIFI_CONFIG_H
+
+/* Copy to wifi_config.h and keep the real credentials out of Git. */
+#define WIFI_SSID        "replace-with-wifi-ssid"
+#define WIFI_PASSWORD    "replace-with-wifi-password"
+
+#endif /* WIFI_CONFIG_H */

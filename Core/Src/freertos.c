@@ -40,6 +40,8 @@
 #include "esp8266_onenet_at.h"
 #include "esp8266_at.h"
 #include "energy_lvgl_ui.h"
+#include "ota_update.h"
+#include "firmware_version.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -111,7 +113,12 @@ volatile uint8_t g_energy_lstm_pred_updated = 0;
 float g_energy_lstm_raw_home_soc = -1.0f;
 
 /* OneNET cloud control and Beijing time */
-OneNET_Control_t g_onenet_ctrl = {-1, -1, -1, -1, 0};
+OneNET_Control_t g_onenet_ctrl = {
+  .home_feng = -1,
+  .home_led = -1,
+  .home_load = -1,
+  .qi = -1
+};
 char g_beijing_time[32] = "--:--:--";
 volatile uint8_t g_onenet_online = 0;
 
@@ -227,6 +234,10 @@ void StartTask07(void const * argument);
 #define ONENET_SWITCH_HEARTBEAT_MS 30000U
 #define ONENET_PING_INTERVAL_MS  60000U  /* MQTT keepalive ping every 60s */
 #define ONENET_STARTUP_DELAY_MS  12000U  /* wait ESP8266 power/WiFi module startup */
+#define ONENET_OTA_DESIRED_POLL_MS 300000U
+#define ONENET_OTA_DESIRED_REPLY_TIMEOUT_MS 5000U
+#define ONENET_OTA_DESIRED_MAX_ATTEMPTS 3U
+#define ONENET_OTA_FAILED_RETRY_DELAY_MS 300000U
 #define PV_PROBE_CHARGE_MS      10000U  /* probe charge duration: 10 seconds */
 #define PV_PROBE_SETTLE_MS      5000U   /* wait current/power to rise after charge MOS on */
 #define PV_ACTIVE_STABILIZE_MS  2000U   /* wait 2s after ACTIVE before probe */
@@ -2507,6 +2518,27 @@ void StartTask06(void const * argument)
   }
 }
 
+static uint8_t OneNET_ReplyControlRequest(const OneNET_Control_t *ctrl,
+                                          uint16_t code,
+                                          const char *message)
+{
+  if (ctrl == NULL)
+  {
+    return 1U;
+  }
+  if (ctrl->request_source != ONENET_REQUEST_SOURCE_PROPERTY_SET)
+  {
+    return 0U;
+  }
+  if (!ctrl->request_id_valid)
+  {
+    if (ONENET_TASK_LOG) printf("ONENET: property/set has no valid request id\r\n");
+    return 1U;
+  }
+
+  return OneNET_MQTT_ReplyPropertySet(ctrl->request_id, code, message);
+}
+
 /**
 * @brief ESP8266 OneNET cloud task on USART2 (PA2=TX, PA3=RX).
 *        Keeps MQTT online while USART3 continues UDP reception independently.
@@ -2529,6 +2561,16 @@ void StartTask07(void const * argument)
   uint8_t mqtt_ok = 0;
   uint32_t last_ping_tick = 0;
   uint8_t process_ret;
+  static OTA_Metadata_t ota_boot_metadata;
+  uint8_t ota_boot_report_pending = 0U;
+  uint32_t ota_report_retry_tick = 0U;
+  uint8_t ota_desired_query_pending = 0U;
+  uint8_t ota_desired_awaiting_reply = 0U;
+  uint8_t ota_desired_query_attempts = 0U;
+  uint8_t ota_desired_backoff_active = 0U;
+  uint32_t ota_desired_query_tick = 0U;
+  uint32_t last_ota_desired_query_tick = 0U;
+  uint32_t ota_retry_epoch_tick = HAL_GetTick();
 
   if (ONENET_TASK_LOG) printf("ONENET: wait module startup %ums\r\n", ONENET_STARTUP_DELAY_MS);
   osDelay(ONENET_STARTUP_DELAY_MS);
@@ -2593,6 +2635,17 @@ void StartTask07(void const * argument)
         pending_switch_ack = 1U;
         publish_fail_count = 0;
         last_ping_tick = HAL_GetTick();
+        ota_boot_report_pending = 1U;
+        ota_report_retry_tick = 0U;
+        ota_desired_query_pending = ota_desired_backoff_active ? 0U : 1U;
+        ota_desired_awaiting_reply = 0U;
+        ota_desired_query_attempts = 0U;
+        ota_desired_query_tick = 0U;
+        if (!ota_desired_backoff_active)
+        {
+          last_ota_desired_query_tick = 0U;
+        }
+        OneNET_MQTT_ClearOTADesiredRequest();
         if (ONENET_TASK_LOG) printf("ONENET: mqtt online on USART2\r\n");
       }
       else
@@ -2604,11 +2657,104 @@ void StartTask07(void const * argument)
       }
     }
 
+    if (mqtt_ok && ota_boot_report_pending &&
+        (ota_report_retry_tick == 0U ||
+         (HAL_GetTick() - ota_report_retry_tick) >= 5000U))
+    {
+      ota_report_retry_tick = HAL_GetTick();
+      if (OTA_Metadata_Read(&ota_boot_metadata) != 0U)
+      {
+        if (ONENET_TASK_LOG) printf("ONENET: wait for initial OTA metadata\r\n");
+      }
+      else
+      {
+        uint8_t progress =
+            ota_boot_metadata.last_result == OTA_RESULT_SUCCESS ? 100U : 0U;
+        uint32_t reported_target =
+            (ota_boot_metadata.last_result == OTA_RESULT_FAILED &&
+             ota_boot_metadata.failed_target_version != 0U) ?
+            ota_boot_metadata.failed_target_version :
+            ota_boot_metadata.target_version;
+        if (OneNET_UploadOTAStatus(ota_boot_metadata.installed_version,
+                                   reported_target,
+                                   (OTA_State_t)ota_boot_metadata.state,
+                                   progress,
+                                   (OTA_Result_t)ota_boot_metadata.last_result,
+                                   (OTA_Error_t)ota_boot_metadata.error_code) == 0U)
+        {
+          if (ota_boot_metadata.state == OTA_STATE_CONFIRMED &&
+              ota_boot_metadata.installed_version == FW_VERSION_NUMBER)
+          {
+            ota_boot_report_pending = 0U;
+          }
+          if (ONENET_TASK_LOG) printf("ONENET: startup OTA status uploaded\r\n");
+        }
+      }
+    }
+
+    if (mqtt_ok && !ota_desired_query_pending &&
+        (HAL_GetTick() - last_ota_desired_query_tick) >=
+            ONENET_OTA_DESIRED_POLL_MS)
+    {
+      ota_desired_query_pending = 1U;
+      ota_desired_awaiting_reply = 0U;
+      ota_desired_query_attempts = 0U;
+      ota_desired_backoff_active = 0U;
+    }
+
+    if (mqtt_ok && ota_desired_query_pending &&
+        OTA_Metadata_Read(&ota_boot_metadata) == 0U &&
+        ota_boot_metadata.state == OTA_STATE_CONFIRMED &&
+        ota_boot_metadata.installed_version == FW_VERSION_NUMBER &&
+        (!ota_desired_awaiting_reply ||
+         (HAL_GetTick() - ota_desired_query_tick) >=
+             ONENET_OTA_DESIRED_REPLY_TIMEOUT_MS))
+    {
+      if (ota_desired_awaiting_reply &&
+          ota_desired_query_attempts >= ONENET_OTA_DESIRED_MAX_ATTEMPTS)
+      {
+        OneNET_MQTT_ClearOTADesiredRequest();
+        ota_desired_query_pending = 0U;
+        ota_desired_awaiting_reply = 0U;
+        ota_desired_backoff_active = 1U;
+        last_ota_desired_query_tick = HAL_GetTick();
+        mqtt_ok = 0U;
+        g_onenet_online = 0U;
+        if (ONENET_TASK_LOG) printf("ONENET: OTA desired reply timeout, reconnect\r\n");
+        ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_CLOSE,
+                                  ESP8266_AT_RSP_OK, 1000U);
+        osDelay(1000U);
+        continue;
+      }
+      else if (OneNET_MQTT_RequestOTADesired(
+                   ota_desired_query_attempts == 0U ? 1U : 0U) == 0U)
+      {
+        ota_desired_awaiting_reply = 1U;
+        ota_desired_query_attempts++;
+        ota_desired_query_tick = HAL_GetTick();
+        if (ONENET_TASK_LOG)
+        {
+          printf("ONENET: OTA desired query sent attempt=%u\r\n",
+                 ota_desired_query_attempts);
+        }
+      }
+      else
+      {
+        if (ONENET_TASK_LOG) printf("ONENET: OTA desired query failed, reconnect\r\n");
+        mqtt_ok = 0U;
+        g_onenet_online = 0U;
+        ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_CLOSE,
+                                  ESP8266_AT_RSP_OK, 1000U);
+        osDelay(1000U);
+        continue;
+      }
+    }
+
+    memset(&ctrl, 0, sizeof(ctrl));
     ctrl.home_feng = -1;
     ctrl.home_led = -1;
     ctrl.home_load = -1;
     ctrl.qi = -1;
-    ctrl.updated = 0;
     process_ret = OneNET_MQTT_Process(&ctrl, 100);
     if (process_ret == 2U)
     {
@@ -2620,7 +2766,168 @@ void StartTask07(void const * argument)
       osDelay(1000);
       continue;
     }
-    if (process_ret == 0 && ctrl.updated)
+    if (process_ret == 0U &&
+        ctrl.request_source == ONENET_REQUEST_SOURCE_DESIRED)
+    {
+      ota_desired_query_pending = 0U;
+      ota_desired_awaiting_reply = 0U;
+      ota_desired_query_attempts = 0U;
+      ota_desired_backoff_active = 0U;
+      last_ota_desired_query_tick = HAL_GetTick();
+      OneNET_MQTT_ClearOTADesiredRequest();
+    }
+    if (ctrl.request_received && process_ret != 0U)
+    {
+      if (ctrl.ota.requested)
+      {
+        OTA_Error_t command_error =
+            (ctrl.ota.board_id != 0U && ctrl.ota.board_id != OTA_BOARD_ID) ?
+            OTA_ERROR_WRONG_BOARD : OTA_ERROR_INVALID_REQUEST;
+        (void)OneNET_UploadOTAStatus(FW_VERSION_NUMBER,
+                                     ctrl.ota.image_version,
+                                     OTA_STATE_CONFIRMED,
+                                     0U,
+                                     OTA_RESULT_FAILED,
+                                     command_error);
+      }
+      (void)OneNET_ReplyControlRequest(&ctrl, 400U,
+                                       "invalid or mixed OTA parameters");
+      if (ONENET_TASK_LOG)
+      {
+        printf("ONENET: rejected invalid %s payload\r\n",
+               ctrl.request_source == ONENET_REQUEST_SOURCE_DESIRED ?
+               "desired" : "property/set");
+      }
+      osDelay(100U);
+      continue;
+    }
+    if (process_ret == 0U && ctrl.ota.ready)
+    {
+      if (OTA_Metadata_Read(&ota_boot_metadata) != 0U ||
+          ota_boot_metadata.state != OTA_STATE_CONFIRMED ||
+          ota_boot_metadata.installed_version != FW_VERSION_NUMBER)
+      {
+        (void)OneNET_ReplyControlRequest(&ctrl, 503U,
+                                         "application is not confirmed");
+        if (ONENET_TASK_LOG) printf("ONENET: OTA deferred until app confirmation\r\n");
+        osDelay(100U);
+        continue;
+      }
+
+      if (OTA_Metadata_IsPermanentlyRejected(&ota_boot_metadata,
+                                             ctrl.ota.url,
+                                             ctrl.ota.image_size,
+                                             ctrl.ota.image_crc32,
+                                             ctrl.ota.image_version,
+                                             ctrl.ota.board_id,
+                                             ctrl.ota.image_hash,
+                                             ctrl.ota.signature))
+      {
+        (void)OneNET_ReplyControlRequest(&ctrl, 409U,
+                                         "ota manifest was rejected before");
+        (void)OneNET_UploadOTAStatus(
+            FW_VERSION_NUMBER,
+            ctrl.ota.image_version,
+            OTA_STATE_CONFIRMED,
+            0U,
+            OTA_RESULT_FAILED,
+            (OTA_Error_t)ota_boot_metadata.error_code);
+        if (ONENET_TASK_LOG) printf("ONENET: duplicate rejected OTA ignored\r\n");
+        osDelay(100U);
+        continue;
+      }
+
+      if (ota_boot_metadata.state == OTA_STATE_CONFIRMED &&
+          ota_boot_metadata.last_result == OTA_RESULT_FAILED &&
+          ota_boot_metadata.failed_target_version != 0U &&
+          (ota_boot_metadata.error_code == OTA_ERROR_WIFI ||
+           ota_boot_metadata.error_code == OTA_ERROR_PREFLIGHT) &&
+          (HAL_GetTick() - ota_retry_epoch_tick) <
+              ONENET_OTA_FAILED_RETRY_DELAY_MS)
+      {
+        (void)OneNET_ReplyControlRequest(&ctrl, 429U,
+                                         "ota retry is cooling down");
+        (void)OneNET_UploadOTAStatus(
+            FW_VERSION_NUMBER,
+            ctrl.ota.image_version,
+            OTA_STATE_CONFIRMED,
+            0U,
+            OTA_RESULT_FAILED,
+            (OTA_Error_t)ota_boot_metadata.error_code);
+        if (ONENET_TASK_LOG) printf("ONENET: deferred failed OTA retry\r\n");
+        osDelay(100U);
+        continue;
+      }
+
+      if (ctrl.ota.image_version <= FW_VERSION_NUMBER)
+      {
+        if (ctrl.request_source == ONENET_REQUEST_SOURCE_DESIRED &&
+            ctrl.ota.image_version == FW_VERSION_NUMBER)
+        {
+          (void)OneNET_UploadOTAStatus(FW_VERSION_NUMBER,
+                                       ctrl.ota.image_version,
+                                       OTA_STATE_CONFIRMED,
+                                       100U,
+                                       OTA_RESULT_SUCCESS,
+                                       OTA_ERROR_NONE);
+          if (ONENET_TASK_LOG) printf("ONENET: desired OTA already installed\r\n");
+        }
+        else
+        {
+          (void)OneNET_ReplyControlRequest(&ctrl, 409U,
+                                           "ota version must be newer");
+          (void)OneNET_UploadOTAStatus(FW_VERSION_NUMBER,
+                                       ctrl.ota.image_version,
+                                       OTA_STATE_CONFIRMED,
+                                       0U,
+                                       OTA_RESULT_FAILED,
+                                       OTA_ERROR_DOWNGRADE);
+          if (ONENET_TASK_LOG) printf("ONENET: rejected OTA downgrade\r\n");
+        }
+        osDelay(100U);
+        continue;
+      }
+
+      if (OTA_Metadata_WriteRequest(ctrl.ota.url,
+                                    ctrl.ota.image_size,
+                                    ctrl.ota.image_crc32,
+                                    ctrl.ota.image_version,
+                                    ctrl.ota.board_id,
+                                    ctrl.ota.image_hash,
+                                    ctrl.ota.signature,
+                                    FW_VERSION_NUMBER) == 0U)
+      {
+        if (ONENET_TASK_LOG)
+        {
+          printf("ONENET: OTA metadata committed size=%lu crc=%08lX version=%lu\r\n",
+                 (unsigned long)ctrl.ota.image_size,
+                 (unsigned long)ctrl.ota.image_crc32,
+                 (unsigned long)ctrl.ota.image_version);
+        }
+        (void)OneNET_ReplyControlRequest(&ctrl, 200U, "ota accepted");
+        (void)OneNET_UploadOTAStatus(FW_VERSION_NUMBER,
+                                     ctrl.ota.image_version,
+                                     OTA_STATE_REQUESTED,
+                                     0U,
+                                     OTA_RESULT_IN_PROGRESS,
+                                     OTA_ERROR_NONE);
+        osDelay(500U);
+        NVIC_SystemReset();
+      }
+      else
+      {
+        (void)OneNET_ReplyControlRequest(&ctrl, 500U, "ota metadata write failed");
+        (void)OneNET_UploadOTAStatus(FW_VERSION_NUMBER,
+                                     ctrl.ota.image_version,
+                                     OTA_STATE_CONFIRMED,
+                                     0U,
+                                     OTA_RESULT_FAILED,
+                                     OTA_ERROR_METADATA);
+        if (ONENET_TASK_LOG) printf("ONENET: OTA metadata write failed\r\n");
+      }
+    }
+
+    if (process_ret == 0U && ctrl.updated)
     {
       osMutexWait(g_mutex, osWaitForever);
       g_onenet_ctrl = ctrl;
@@ -2632,6 +2939,7 @@ void StartTask07(void const * argument)
         printf("ONENET: ctrl feng=%d led=%d load=%d qi=%d\r\n",
                ctrl.home_feng, ctrl.home_led, ctrl.home_load, ctrl.qi);
       }
+      (void)OneNET_ReplyControlRequest(&ctrl, 200U, "success");
     }
 
     if ((HAL_GetTick() - last_upload_tick) >= ONENET_FULL_UPLOAD_MS)
@@ -2747,57 +3055,71 @@ void vApplicationGetTimerTaskMemory(StaticTask_t **ppxTimerTaskTCBBuffer,
   *pulTimerTaskStackSize = 256;
 }
 
+static void FreeRTOS_RequireCreated(const void *handle, const char *name)
+{
+  if (handle == NULL)
+  {
+    printf("FreeRTOS: failed to create %s\r\n", name);
+    Error_Handler();
+  }
+}
+
 /**
   * @brief  FreeRTOS initialization - creates mutex, semaphore, queue and tasks
   */
 void MX_FREERTOS_Init(void)
 {
+  osThreadId thread_id;
+
   /* Create mutex for shared sensor data */
   osMutexDef(g_mutex);
   g_mutex = osMutexCreate(osMutex(g_mutex));
+  FreeRTOS_RequireCreated(g_mutex, "g_mutex");
 
   /* Create semaphore for data-ready signaling */
   osSemaphoreDef(g_data_ready);
   g_data_ready = osSemaphoreCreate(osSemaphore(g_data_ready), 1);
+  FreeRTOS_RequireCreated(g_data_ready, "g_data_ready");
   osSemaphoreWait(g_data_ready, 0); /* consume initial token */
 
   /* Create semaphore for LCD update signaling */
   osSemaphoreDef(g_lcd_update);
   g_lcd_update = osSemaphoreCreate(osSemaphore(g_lcd_update), 1);
+  FreeRTOS_RequireCreated(g_lcd_update, "g_lcd_update");
   osSemaphoreWait(g_lcd_update, 0); /* consume initial token */
 
   /* Define and create tasks */
   osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 256);
-  osThreadCreate(osThread(defaultTask), NULL);
+  thread_id = osThreadCreate(osThread(defaultTask), NULL);
+  FreeRTOS_RequireCreated(thread_id, "defaultTask");
 
   osThreadDef(usart, StartTask01, osPriorityBelowNormal, 0, 256);
-  osThreadCreate(osThread(usart), NULL);
+  thread_id = osThreadCreate(osThread(usart), NULL);
+  FreeRTOS_RequireCreated(thread_id, "usart");
 
   osThreadDef(adc_1, StartTask02, osPriorityBelowNormal, 0, 256);
-  osThreadCreate(osThread(adc_1), NULL);
+  thread_id = osThreadCreate(osThread(adc_1), NULL);
+  FreeRTOS_RequireCreated(thread_id, "adc_1");
 
   osThreadDef(adc_2, StartTask03, osPriorityBelowNormal, 0, 256);
-  osThreadCreate(osThread(adc_2), NULL);
+  thread_id = osThreadCreate(osThread(adc_2), NULL);
+  FreeRTOS_RequireCreated(thread_id, "adc_2");
 
   osThreadDef(adc_3, StartTask04, osPriorityBelowNormal, 0, 512);
-  osThreadCreate(osThread(adc_3), NULL);
+  thread_id = osThreadCreate(osThread(adc_3), NULL);
+  FreeRTOS_RequireCreated(thread_id, "adc_3");
 
   osThreadDef(lcd, StartTask05, osPriorityBelowNormal, 0, 1024);
-  osThreadCreate(osThread(lcd), NULL);
+  thread_id = osThreadCreate(osThread(lcd), NULL);
+  FreeRTOS_RequireCreated(thread_id, "lcd");
 
   osThreadDef(esp8266, StartTask06, osPriorityBelowNormal, 0, 1024);
-  osThreadCreate(osThread(esp8266), NULL);
-  // if (osThreadCreate(osThread(esp8266), NULL) == NULL)
-  // {
-  //   if (SERIAL_VERBOSE_LOG) printf("ESP8266 task create failed\r\n");
-  // }
+  thread_id = osThreadCreate(osThread(esp8266), NULL);
+  FreeRTOS_RequireCreated(thread_id, "esp8266");
 
-  osThreadDef(onenet, StartTask07, osPriorityBelowNormal, 0, 1024);
-  osThreadCreate(osThread(onenet), NULL);
-  // if (osThreadCreate(osThread(onenet), NULL) == NULL)
-  // {
-  //   if (SERIAL_VERBOSE_LOG) printf("OneNET task create failed\r\n");
-  // }
+  osThreadDef(onenet, StartTask07, osPriorityBelowNormal, 0, 1280);
+  thread_id = osThreadCreate(osThread(onenet), NULL);
+  FreeRTOS_RequireCreated(thread_id, "onenet");
 }
 
 /* USER CODE END Application */

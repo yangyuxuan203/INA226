@@ -57,7 +57,7 @@ MEMORY
 {
 RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 128K
 CCMRAM (xrw)      : ORIGIN = 0x10000000, LENGTH = 64K
-FLASH (rx)      : ORIGIN = 0x8000000, LENGTH = 512K
+FLASH (rx)      : ORIGIN = 0x08020000, LENGTH = 384K
 }
 
 /* Highest address of the user mode stack */
@@ -74,6 +74,13 @@ SECTIONS
   {
     . = ALIGN(4);
     KEEP(*(.isr_vector)) /* Startup code */
+    . = ALIGN(4);
+  } >FLASH
+
+  .firmware_info 0x08020200 :
+  {
+    . = ALIGN(4);
+    KEEP(*(.firmware_info))
     . = ALIGN(4);
   } >FLASH
 

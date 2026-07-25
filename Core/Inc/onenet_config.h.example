@@ -1,0 +1,12 @@
+#ifndef ONENET_CONFIG_H
+#define ONENET_CONFIG_H
+
+/* Copy to onenet_config.h and keep the real credentials out of Git. */
+#define ONENET_MQTT_HOST     "mqtts.heclouds.com"
+#define ONENET_MQTT_PORT     1883
+#define ONENET_PRODUCT_ID    "replace-with-product-id"
+#define ONENET_ACCESS_KEY    "replace-with-access-key"
+#define ONENET_DEVICE_NAME   "replace-with-device-name"
+#define ONENET_TOKEN_EXPIRE  1956499200U
+
+#endif /* ONENET_CONFIG_H */

@@ -28,6 +28,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 project(${CMAKE_PROJECT_NAME})
 message("Build type: " ${CMAKE_BUILD_TYPE})
 
+# Use the binutils shipped beside the compiler even when that directory is not
+# present in the shell PATH (for example when building outside STM32CubeIDE).
+get_filename_component(ARM_TOOLCHAIN_BIN_DIR "${CMAKE_C_COMPILER}" DIRECTORY)
+find_program(ARM_OBJCOPY_EXECUTABLE arm-none-eabi-objcopy
+    HINTS "${ARM_TOOLCHAIN_BIN_DIR}" REQUIRED)
+set(CMAKE_OBJCOPY "${ARM_OBJCOPY_EXECUTABLE}")
+
 # Enable CMake support for ASM and C languages
 enable_language(C ASM)
 
@@ -56,7 +63,14 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined symbols
+    USER_VECT_TAB_ADDRESS
+    VECT_TAB_OFFSET=0x00020000U
+)
+
+# system_stm32f4xx.c is compiled by the stm32cubemx interface/object targets.
+target_compile_definitions(stm32cubemx INTERFACE
+    USER_VECT_TAB_ADDRESS
+    VECT_TAB_OFFSET=0x00020000U
 )
 
 # Remove wrong libob.a library dependency when using cpp files
@@ -67,4 +81,11 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
 
     # Add user defined libraries
+)
+
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY} -O binary
+            $<TARGET_FILE:${CMAKE_PROJECT_NAME}>
+            ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin
+    COMMENT "Generating application binary"
 )

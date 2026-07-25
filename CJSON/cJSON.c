@@ -341,6 +341,7 @@ cJSON *cJSON_Parse(const char *value) {return cJSON_ParseWithOpts(value,0,0);}
 /* Render a cJSON item/entity/structure to text. */
 char *cJSON_Print(cJSON *item)				{return print_value(item,0,1,0);}
 char *cJSON_PrintUnformatted(cJSON *item)	{return print_value(item,0,0,0);}
+void cJSON_Free(void *object)				{if (object) cJSON_free(object);}
 
 char *cJSON_PrintBuffered(cJSON *item,int prebuffer,int fmt)
 {

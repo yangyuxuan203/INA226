@@ -73,6 +73,8 @@ extern char  *cJSON_Print(cJSON *item);
 extern char  *cJSON_PrintUnformatted(cJSON *item);
 /* Render a cJSON entity to text using a buffered strategy. prebuffer is a guess at the final size. guessing well reduces reallocation. fmt=0 gives unformatted, =1 gives formatted */
 extern char *cJSON_PrintBuffered(cJSON *item,int prebuffer,int fmt);
+/* Free memory returned by cJSON_Print* with the currently configured hook. */
+extern void   cJSON_Free(void *object);
 /* Delete a cJSON entity and all subentities. */
 extern void   cJSON_Delete(cJSON *c);
 

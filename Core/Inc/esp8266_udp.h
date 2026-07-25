@@ -6,10 +6,11 @@ extern "C" {
 #endif
 
 #include "main.h"
+#include "wifi_config.h"
 
 /* Update these values to match your ESP32-S3 WiFi/UDP setup. */
-#define ESP8266_WIFI_SSID        "wlh"
-#define ESP8266_WIFI_PASSWORD    "20160912"
+#define ESP8266_WIFI_SSID        WIFI_SSID
+#define ESP8266_WIFI_PASSWORD    WIFI_PASSWORD
 #define ESP8266_UDP_PORT         8888
 #define ESP32S3_RX_PORT          8889
 
