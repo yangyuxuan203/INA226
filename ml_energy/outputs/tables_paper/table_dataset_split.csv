@@ -1,4 +1,0 @@
-﻿split,sequences,scene_count,min_scene_id,max_scene_id
-train,1958,18,1,112
-validation,412,18,1,112
-test,447,18,1,112

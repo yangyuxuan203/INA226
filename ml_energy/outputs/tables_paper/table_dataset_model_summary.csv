@@ -1,2 +1,0 @@
-﻿cleaned_rows,training_rows_1min_real_time,lstm_sequences,input_features,output_targets,sequence_length,resample_period_s,forecast_horizon_min,test_sequences,int8_model_size_bytes
-1142,3015,2817,19,3,12,60,10,447,57048

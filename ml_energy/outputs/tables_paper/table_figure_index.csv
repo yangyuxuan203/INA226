@@ -1,9 +1,0 @@
-﻿figure_name,title,recommended_use
-01_scenario_overview,Six-scenario data overview,Use in dataset/experimental design section.
-02_feature_target_correlation,Input-output correlation heatmap,Use to justify feature selection.
-03_quantization_error_and_size,TFLite error and model size,Use to compare float/dynamic/INT8 deployment.
-04_int8_prediction_parity,INT8 predicted-vs-measured scatter,Use to show prediction agreement.
-05_edge_ai_pipeline,STM32-ESP32 edge-AI pipeline,Use in system architecture section.
-06_lstm_window_definition,12-step sequence construction,Use to explain deployment timing.
-07_int8_prediction_trajectory,INT8 test-set trajectory,Use to show time-series tracking effect.
-08_int8_error_distribution,INT8 error distribution,Use to discuss residual error and robustness.
