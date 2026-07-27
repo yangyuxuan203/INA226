@@ -15,23 +15,26 @@
 
 #define CAN_APP_VERBOSE_LOG 0U
 
-QueueHandle_t xCanRxQueue;
+static QueueHandle_t s_can_rx_queue;
 
 /* Received battery data from STM32F1 */
-CAN_BatteryData_t g_f1_battery = {0};
-volatile uint8_t g_f1_battery_updated = 0;
+static CAN_BatteryData_t s_f1_battery = {0};
 
 static CAN_RxHeaderTypeDef g_rx_header;
 static uint8_t g_rx_data[8];
 
 static CAN_FilterTypeDef g_can_filter;
 
-void CAN_App_Init(void)
+uint8_t CAN_App_Init(void)
 {
     HAL_StatusTypeDef ret;
 
     /* Create queue for CAN RX commands (depth 16, each item is CAN_CtrlCmd_t) */
-    xCanRxQueue = xQueueCreate(16, sizeof(CAN_CtrlCmd_t));
+    s_can_rx_queue = xQueueCreate(16, sizeof(CAN_CtrlCmd_t));
+    if (s_can_rx_queue == NULL)
+    {
+        return 1U;
+    }
 
     /* Configure CAN filter to accept all messages */
     g_can_filter.FilterBank           = 0;
@@ -46,14 +49,27 @@ void CAN_App_Init(void)
 
     ret = HAL_CAN_ConfigFilter(&hcan1, &g_can_filter);
     if (CAN_APP_VERBOSE_LOG) printf("CAN ConfigFilter: %d\r\n", ret);
+    if (ret != HAL_OK)
+    {
+        return 1U;
+    }
 
     ret = HAL_CAN_Start(&hcan1);
     if (CAN_APP_VERBOSE_LOG) printf("CAN Start: %d\r\n", ret);
+    if (ret != HAL_OK)
+    {
+        return 1U;
+    }
 
     ret = HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
     if (CAN_APP_VERBOSE_LOG) printf("CAN ActivateNotification: %d\r\n", ret);
+    if (ret != HAL_OK)
+    {
+        return 1U;
+    }
 
     if (CAN_APP_VERBOSE_LOG) printf("CAN State: %d\r\n", HAL_CAN_GetState(&hcan1));
+    return 0U;
 }
 
 /**
@@ -118,6 +134,28 @@ void CAN_App_TransmitBattery(const CAN_BatteryData_t *data)
     HAL_CAN_AddTxMessage(&hcan1, &tx_header, tx_data, &mailbox);
 }
 
+void CAN_App_GetBatterySnapshot(CAN_BatteryData_t *data)
+{
+    if (data == NULL)
+    {
+        return;
+    }
+
+    taskENTER_CRITICAL();
+    *data = s_f1_battery;
+    taskEXIT_CRITICAL();
+}
+
+uint8_t CAN_App_TryReceiveCommand(CAN_CtrlCmd_t *command)
+{
+    if (command == NULL || s_can_rx_queue == NULL)
+    {
+        return 1U;
+    }
+
+    return xQueueReceive(s_can_rx_queue, command, 0U) == pdTRUE ? 0U : 1U;
+}
+
 /* CAN RX FIFO0 callback */
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan_handle)
 {
@@ -135,31 +173,26 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan_handle)
             switch (g_rx_header.StdId)
             {
                 case CAN_ID_BAT_VOLTAGE:
-                    memcpy(&g_f1_battery.voltage, g_rx_data, sizeof(float));
-                    g_f1_battery_updated = 1;
+                    memcpy(&s_f1_battery.voltage, g_rx_data, sizeof(float));
                     break;
 
                 case CAN_ID_BAT_CURRENT:
-                    memcpy(&g_f1_battery.current, g_rx_data, sizeof(float));
-                    g_f1_battery_updated = 1;
+                    memcpy(&s_f1_battery.current, g_rx_data, sizeof(float));
                     break;
 
                 case CAN_ID_BAT_TEMP:
-                    memcpy(&g_f1_battery.temperature, g_rx_data, sizeof(float));
-                    g_f1_battery_updated = 1;
+                    memcpy(&s_f1_battery.temperature, g_rx_data, sizeof(float));
                     break;
 
                 case CAN_ID_BAT_STATUS:
-                    g_f1_battery.status = (BatteryStatus_t)g_rx_data[0];
-                    g_f1_battery_updated = 1;
+                    s_f1_battery.status = (BatteryStatus_t)g_rx_data[0];
                     break;
 
                 case CAN_ID_BAT_SOC:
                 {
                     float f1_soc;
                     memcpy(&f1_soc, g_rx_data, sizeof(float));
-                    g_f1_battery.soc_pct = (uint8_t)(f1_soc + 0.5f);
-                    g_f1_battery_updated = 1;
+                    s_f1_battery.soc_pct = (uint8_t)(f1_soc + 0.5f);
                     break;
                 }
 
@@ -168,7 +201,11 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan_handle)
                     CAN_CtrlCmd_t cmd;
                     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
                     memcpy(&cmd, g_rx_data, sizeof(CAN_CtrlCmd_t));
-                    xQueueSendFromISR(xCanRxQueue, &cmd, &xHigherPriorityTaskWoken);
+                    if (s_can_rx_queue != NULL)
+                    {
+                        xQueueSendFromISR(s_can_rx_queue, &cmd,
+                                          &xHigherPriorityTaskWoken);
+                    }
                     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
                     break;
                 }

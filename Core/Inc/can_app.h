@@ -15,7 +15,6 @@ extern "C" {
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include <stdint.h>
-#include "cmsis_os.h"
 
 /* Exported constants --------------------------------------------------------*/
 /* CAN Message IDs (STM32F1 -> STM32F4) */
@@ -54,15 +53,12 @@ typedef struct {
     uint8_t reserved[6];
 } CAN_CtrlCmd_t;
 
-/* Exported variables --------------------------------------------------------*/
-extern QueueHandle_t xCanRxQueue;
-extern CAN_BatteryData_t g_f1_battery;
-extern volatile uint8_t g_f1_battery_updated;
-
 /* Exported functions --------------------------------------------------------*/
-void CAN_App_Init(void);
+uint8_t CAN_App_Init(void);
 uint8_t CAN_App_Send(uint32_t id, uint8_t *data, uint8_t len);
 void CAN_App_TransmitBattery(const CAN_BatteryData_t *data);
+void CAN_App_GetBatterySnapshot(CAN_BatteryData_t *data);
+uint8_t CAN_App_TryReceiveCommand(CAN_CtrlCmd_t *command);
 
 #ifdef __cplusplus
 }

@@ -38,14 +38,23 @@ set(LVGL_FONT_SOURCES
 
 # User sources
 set(User_Sources
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/firmware_version.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/app_clock.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/app_health.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/app_state.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/app_tasks.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/soc_estimator.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/energy_io.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/energy_service.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/energy_ui_model.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/ina226_pv.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/ina226_3.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/esp8266_at.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/esp8266_udp.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/esp8266_onenet_at.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/esp8266_onenet.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/ota_update.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/onenet_runtime.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/onenet_service.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/esp32_service.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/lv_port_energy.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/energy_lvgl_ui.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../MQTT/MqttKit.c

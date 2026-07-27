@@ -1,17 +1,23 @@
 #include "esp8266_onenet_at.h"
 #include "esp8266_udp.h"
 #include "usart.h"
+#include "cmsis_os.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define ESP8266_ONENET_AT_DMA_RX_SIZE 1024
+#define ESP8266_ONENET_AT_DMA_RX_SIZE 2048U
 #define ESP8266_ONENET_AT_RSP_SIZE    768
-#define ESP8266_ONENET_AT_VERBOSE_LOG 1U
+#ifndef ESP8266_ONENET_AT_VERBOSE_LOG
+#define ESP8266_ONENET_AT_VERBOSE_LOG 0U
+#endif
 #define ESP8266_ONENET_AT_BOOT_WAIT_MS 1500U
 #define ESP8266_ONENET_AT_ESCAPE_WAIT_MS 1200U
 #define ESP8266_ONENET_AT_READY_RETRY 5U
 #define ESP8266_ONENET_TCP_STREAM_SIZE 2048U
+#define ESP8266_ONENET_SNTP_RETRY_COUNT 3U
+#define ESP8266_ONENET_SNTP_READY_WAIT_MS 1500U
+#define ESP8266_ONENET_SNTP_QUERY_TIMEOUT_MS 2500U
 
 typedef enum
 {
@@ -23,6 +29,9 @@ typedef enum
 
 static uint8_t g_onenet_dma_rx[ESP8266_ONENET_AT_DMA_RX_SIZE];
 static uint16_t g_onenet_dma_old_pos = 0;
+static volatile uint32_t g_onenet_dma_wrap_count = 0U;
+static uint32_t g_onenet_dma_old_wrap_count = 0U;
+static uint8_t g_onenet_dma_overflow = 0U;
 static uint8_t g_onenet_dma_started = 0;
 static ESP8266_RawState_t g_onenet_raw_state = ESP8266_RAW_FIND_IPD;
 static uint8_t g_onenet_ipd_prefix_pos = 0U;
@@ -35,6 +44,15 @@ static uint8_t g_onenet_tcp_overflow = 0U;
 static char g_onenet_link_event[32];
 static uint8_t g_onenet_link_event_len = 0U;
 static uint8_t g_onenet_link_closed = 0U;
+static uint8_t g_onenet_sntp_configured = 0U;
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart == &huart2)
+    {
+        g_onenet_dma_wrap_count++;
+    }
+}
 
 static void ESP8266_ONENET_AT_ResetStreamParser(void)
 {
@@ -248,8 +266,13 @@ static void ESP8266_ONENET_AT_ClearUartErrors(void)
 
 static uint8_t ESP8266_ONENET_AT_RestartDma(void)
 {
+    g_onenet_dma_started = 0U;
     HAL_UART_AbortReceive(&huart2);
     ESP8266_ONENET_AT_ClearUartErrors();
+
+    g_onenet_dma_wrap_count = 0U;
+    g_onenet_dma_old_wrap_count = 0U;
+    g_onenet_dma_overflow = 0U;
 
     if (HAL_UART_Receive_DMA(&huart2, g_onenet_dma_rx, ESP8266_ONENET_AT_DMA_RX_SIZE) != HAL_OK)
     {
@@ -270,7 +293,13 @@ static uint8_t ESP8266_ONENET_AT_EnsureDma(void)
         huart2.RxState != HAL_UART_STATE_BUSY_RX ||
         huart2.ErrorCode != HAL_UART_ERROR_NONE)
     {
-        return ESP8266_ONENET_AT_RestartDma();
+        uint8_t was_started = g_onenet_dma_started;
+        uint8_t result = ESP8266_ONENET_AT_RestartDma();
+        if (result == 0U && was_started != 0U)
+        {
+            g_onenet_dma_overflow = 1U;
+        }
+        return result;
     }
 
     return 0;
@@ -290,18 +319,30 @@ uint8_t ESP8266_ONENET_AT_StartDma(void)
 void ESP8266_ONENET_AT_ClearRx(void)
 {
     uint16_t pos;
+    uint32_t wrap_count;
+    uint32_t wrap_count_after;
 
     if (ESP8266_ONENET_AT_EnsureDma() != 0)
     {
         return;
     }
 
-    pos = (uint16_t)(ESP8266_ONENET_AT_DMA_RX_SIZE - __HAL_DMA_GET_COUNTER(huart2.hdmarx));
-    if (pos >= ESP8266_ONENET_AT_DMA_RX_SIZE)
+    do
     {
-        pos = 0;
+        wrap_count = g_onenet_dma_wrap_count;
+        pos = (uint16_t)(ESP8266_ONENET_AT_DMA_RX_SIZE -
+                         __HAL_DMA_GET_COUNTER(huart2.hdmarx));
+        if (pos >= ESP8266_ONENET_AT_DMA_RX_SIZE)
+        {
+            pos = 0U;
+        }
+        wrap_count_after = g_onenet_dma_wrap_count;
     }
+    while (wrap_count != wrap_count_after);
+
     g_onenet_dma_old_pos = pos;
+    g_onenet_dma_old_wrap_count = wrap_count;
+    g_onenet_dma_overflow = 0U;
     ESP8266_ONENET_AT_ResetStreamParser();
 }
 
@@ -309,20 +350,56 @@ static int16_t ESP8266_ONENET_AT_ReadDmaByte(void)
 {
     uint16_t pos;
     uint8_t ch;
+    uint32_t wrap_count;
+    uint32_t wrap_count_after;
+    uint32_t wrap_delta;
+    uint32_t available;
 
     if (ESP8266_ONENET_AT_EnsureDma() != 0)
     {
         return -1;
     }
 
-    pos = (uint16_t)(ESP8266_ONENET_AT_DMA_RX_SIZE - __HAL_DMA_GET_COUNTER(huart2.hdmarx));
-    if (pos >= ESP8266_ONENET_AT_DMA_RX_SIZE)
+    do
     {
-        pos = 0;
+        wrap_count = g_onenet_dma_wrap_count;
+        pos = (uint16_t)(ESP8266_ONENET_AT_DMA_RX_SIZE -
+                         __HAL_DMA_GET_COUNTER(huart2.hdmarx));
+        if (pos >= ESP8266_ONENET_AT_DMA_RX_SIZE)
+        {
+            pos = 0U;
+        }
+        wrap_count_after = g_onenet_dma_wrap_count;
+    }
+    while (wrap_count != wrap_count_after);
+
+    wrap_delta = wrap_count - g_onenet_dma_old_wrap_count;
+    if (wrap_delta == 0U)
+    {
+        if (pos < g_onenet_dma_old_pos)
+        {
+            g_onenet_dma_overflow = 1U;
+            g_onenet_dma_old_pos = pos;
+            return -1;
+        }
+        available = (uint32_t)(pos - g_onenet_dma_old_pos);
+    }
+    else
+    {
+        available = (wrap_delta - 1U) * ESP8266_ONENET_AT_DMA_RX_SIZE;
+        available += ESP8266_ONENET_AT_DMA_RX_SIZE - g_onenet_dma_old_pos;
+        available += pos;
     }
 
-    if (g_onenet_dma_old_pos == pos)
+    if (available == 0U)
     {
+        return -1;
+    }
+    if (available > ESP8266_ONENET_AT_DMA_RX_SIZE)
+    {
+        g_onenet_dma_overflow = 1U;
+        g_onenet_dma_old_pos = pos;
+        g_onenet_dma_old_wrap_count = wrap_count;
         return -1;
     }
 
@@ -330,6 +407,7 @@ static int16_t ESP8266_ONENET_AT_ReadDmaByte(void)
     if (g_onenet_dma_old_pos >= ESP8266_ONENET_AT_DMA_RX_SIZE)
     {
         g_onenet_dma_old_pos = 0;
+        g_onenet_dma_old_wrap_count++;
     }
 
     return ch;
@@ -391,7 +469,7 @@ uint16_t ESP8266_ONENET_AT_ReadUntil(char *buf, uint16_t len, const char *expect
         }
         else
         {
-            HAL_Delay(1);
+            osDelay(1U);
         }
     }
 
@@ -411,7 +489,7 @@ uint8_t ESP8266_ONENET_AT_SendCmd(const char *cmd, const char *expect, uint32_t 
         if (ESP8266_ONENET_AT_SendRaw(cmd) != 0 || ESP8266_ONENET_AT_SendRaw("\r\n") != 0)
         {
             (void)ESP8266_ONENET_AT_RestartDma();
-            HAL_Delay(50);
+            osDelay(50U);
             continue;
         }
 
@@ -435,7 +513,7 @@ uint8_t ESP8266_ONENET_AT_SendCmd(const char *cmd, const char *expect, uint32_t 
             printf("ONENET AT empty rsp, restart USART2 RX DMA and retry cmd=[%s]\r\n", cmd);
         }
         (void)ESP8266_ONENET_AT_RestartDma();
-        HAL_Delay(100);
+        osDelay(100U);
     }
 
     if (ESP8266_ONENET_AT_VERBOSE_LOG) printf("ONENET AT fail cmd=[%s] rsp=[%s]\r\n", cmd, rx);
@@ -446,15 +524,15 @@ static void ESP8266_ONENET_AT_PrepareBeforeInit(void)
 {
     (void)ESP8266_ONENET_AT_StartDma();
 
-    HAL_Delay(ESP8266_ONENET_AT_BOOT_WAIT_MS);
+    osDelay(ESP8266_ONENET_AT_BOOT_WAIT_MS);
     ESP8266_ONENET_AT_ClearRx();
 
     /* Leave possible transparent transmission mode from a previous run. */
     (void)ESP8266_ONENET_AT_SendRaw("+++");
-    HAL_Delay(ESP8266_ONENET_AT_ESCAPE_WAIT_MS);
+    osDelay(ESP8266_ONENET_AT_ESCAPE_WAIT_MS);
     ESP8266_ONENET_AT_ClearRx();
 
-    HAL_Delay(200U);
+    osDelay(200U);
     ESP8266_ONENET_AT_ClearRx();
 }
 
@@ -490,15 +568,57 @@ uint8_t ESP8266_ONENET_AT_JoinAp(const char *ssid, const char *password)
             return 0;
         }
 
-        HAL_Delay(1000);
+        osDelay(1000U);
     }
 
     return ESP8266_ONENET_AT_SendCmd("AT+CWJAP?", ESP8266_AT_RSP_OK, 3000);
 }
 
+static uint8_t ESP8266_ONENET_AT_ResponseHasLine(const char *response,
+                                                  const char *expected)
+{
+    const char *line;
+    const char *end;
+    size_t expected_len;
+
+    if (response == NULL || expected == NULL || expected[0] == '\0')
+    {
+        return 0U;
+    }
+
+    expected_len = strlen(expected);
+    line = response;
+    while (*line != '\0')
+    {
+        while (*line == '\r' || *line == '\n')
+        {
+            line++;
+        }
+        if (*line == '\0')
+        {
+            break;
+        }
+
+        end = strpbrk(line, "\r\n");
+        if (end == NULL)
+        {
+            end = line + strlen(line);
+        }
+        if ((size_t)(end - line) == expected_len &&
+            memcmp(line, expected, expected_len) == 0)
+        {
+            return 1U;
+        }
+        line = end;
+    }
+
+    return 0U;
+}
+
 uint8_t ESP8266_ONENET_AT_StartTcp(const char *host, uint16_t port)
 {
     char cmd[128];
+    char rx[ESP8266_ONENET_AT_RSP_SIZE];
 
     if (host == NULL)
     {
@@ -506,12 +626,19 @@ uint8_t ESP8266_ONENET_AT_StartTcp(const char *host, uint16_t port)
     }
 
     snprintf(cmd, sizeof(cmd), "AT+CIPSTART=\"TCP\",\"%s\",%u", host, port);
-    if (ESP8266_ONENET_AT_SendCmd(cmd, ESP8266_AT_RSP_OK, 5000) == 0)
+    ESP8266_ONENET_AT_ClearRx();
+    if (ESP8266_ONENET_AT_SendRaw(cmd) != 0U ||
+        ESP8266_ONENET_AT_SendRaw("\r\n") != 0U)
     {
-        return 0;
+        return 1U;
     }
 
-    return ESP8266_ONENET_AT_SendCmd(cmd, ESP8266_AT_RSP_CONNECT, 5000);
+    (void)ESP8266_ONENET_AT_ReadUntil(rx, sizeof(rx),
+                                      "CONNECT\r\n", 5000U);
+    return (ESP8266_ONENET_AT_ResponseHasLine(
+                rx, ESP8266_AT_RSP_CONNECT) != 0U ||
+            ESP8266_ONENET_AT_ResponseHasLine(
+                rx, "ALREADY CONNECTED") != 0U) ? 0U : 1U;
 }
 
 uint8_t ESP8266_ONENET_AT_SendData(const uint8_t *data, uint16_t len)
@@ -546,7 +673,8 @@ uint8_t ESP8266_ONENET_AT_SendData(const uint8_t *data, uint16_t len)
     return strstr(rx, ESP8266_AT_RSP_SEND_OK) != NULL ? 0 : 1;
 }
 
-uint8_t ESP8266_ONENET_AT_WaitTcpPacket(uint8_t *payload, uint16_t len, uint16_t *out_len, uint32_t timeout_ms)
+ESP8266_ONENET_AT_Result_t ESP8266_ONENET_AT_WaitTcpPacket(
+    uint8_t *payload, uint16_t len, uint16_t *out_len, uint32_t timeout_ms)
 {
     uint32_t start = HAL_GetTick();
     int16_t ch;
@@ -554,42 +682,99 @@ uint8_t ESP8266_ONENET_AT_WaitTcpPacket(uint8_t *payload, uint16_t len, uint16_t
 
     if (payload == NULL || len == 0U || out_len == NULL)
     {
-        return 1;
+        return ESP8266_ONENET_AT_RX_ERROR;
     }
 
     *out_len = 0;
 
     while ((HAL_GetTick() - start) < timeout_ms)
     {
+        if (g_onenet_dma_overflow != 0U)
+        {
+            g_onenet_dma_overflow = 0U;
+            ESP8266_ONENET_AT_ResetStreamParser();
+            return ESP8266_ONENET_AT_RX_ERROR;
+        }
+
         packet_result = ESP8266_ONENET_AT_TryPopMqtt(payload, len, out_len);
         if (packet_result == 0U)
         {
-            return 0U;
+            return ESP8266_ONENET_AT_OK;
         }
-        if (packet_result == 2U || g_onenet_link_closed)
+        if (g_onenet_link_closed)
         {
-            return 2U;
+            return ESP8266_ONENET_AT_LINK_CLOSED;
+        }
+        if (packet_result == 2U)
+        {
+            return ESP8266_ONENET_AT_RX_ERROR;
         }
 
         ch = ESP8266_ONENET_AT_ReadDmaByte();
         if (ch < 0)
         {
-            HAL_Delay(1);
+            osDelay(1U);
             continue;
         }
 
         (void)ESP8266_ONENET_AT_FeedRawByte((uint8_t)ch);
     }
 
-    return 1;
+    return ESP8266_ONENET_AT_TIMEOUT;
+}
+
+static uint8_t ESP8266_ONENET_AT_ParseSntpTime(const char *response,
+                                                char *buf,
+                                                uint16_t len)
+{
+    const char *start;
+    const char *end;
+    uint16_t copy_len;
+
+    if (response == NULL || buf == NULL || len == 0U)
+    {
+        return 1U;
+    }
+
+    start = strstr(response, "CIPSNTPTIME:");
+    if (start == NULL)
+    {
+        return 1U;
+    }
+
+    start += strlen("CIPSNTPTIME:");
+    while (*start == ' ')
+    {
+        start++;
+    }
+    if (strstr(start, "1970") != NULL)
+    {
+        return 1U;
+    }
+
+    end = strpbrk(start, "\r\n");
+    if (end == NULL)
+    {
+        end = start + strlen(start);
+    }
+    if (end == start)
+    {
+        return 1U;
+    }
+
+    copy_len = (uint16_t)(end - start);
+    if (copy_len >= len)
+    {
+        copy_len = (uint16_t)(len - 1U);
+    }
+    memcpy(buf, start, copy_len);
+    buf[copy_len] = '\0';
+    return 0U;
 }
 
 uint8_t ESP8266_ONENET_AT_GetSntpTime(char *buf, uint16_t len)
 {
     char rx[256];
-    char *p;
-    char *e;
-    uint16_t copy_len;
     uint8_t cfg_ok = 0;
     uint8_t retry;
 
@@ -611,6 +796,7 @@ uint8_t ESP8266_ONENET_AT_GetSntpTime(char *buf, uint16_t len)
 
     if (!cfg_ok)
     {
+        g_onenet_sntp_configured = 0U;
         ESP8266_ONENET_AT_ClearRx();
         if (ESP8266_ONENET_AT_SendRaw("AT+GMR\r\n") == 0)
         {
@@ -619,47 +805,85 @@ uint8_t ESP8266_ONENET_AT_GetSntpTime(char *buf, uint16_t len)
         }
         return 1;
     }
+    g_onenet_sntp_configured = 1U;
 
-    for (retry = 0; retry < 5U; retry++)
+    for (retry = 0U; retry < ESP8266_ONENET_SNTP_RETRY_COUNT; retry++)
     {
-        HAL_Delay(3000);
+        osDelay(ESP8266_ONENET_SNTP_READY_WAIT_MS);
         ESP8266_ONENET_AT_ClearRx();
         if (ESP8266_ONENET_AT_SendRaw("AT+CIPSNTPTIME?\r\n") != 0)
         {
             return 1;
         }
-        ESP8266_ONENET_AT_ReadUntil(rx, sizeof(rx), ESP8266_AT_RSP_OK, 5000);
+        ESP8266_ONENET_AT_ReadUntil(rx, sizeof(rx), ESP8266_AT_RSP_OK,
+                                    ESP8266_ONENET_SNTP_QUERY_TIMEOUT_MS);
         if (ESP8266_ONENET_AT_VERBOSE_LOG) printf("ONENET SNTP try %u raw=[%s]\r\n", retry + 1U, rx);
 
-        p = strstr(rx, "CIPSNTPTIME:");
-        if (p == NULL)
+        if (ESP8266_ONENET_AT_ParseSntpTime(rx, buf, len) == 0U)
         {
-            continue;
+            return 0U;
         }
-        p += strlen("CIPSNTPTIME:");
-        while (*p == ' ') p++;
-        e = strpbrk(p, "\r\n");
-        if (e == NULL)
-        {
-            e = p + strlen(p);
-        }
-
-        if (strstr(p, "1970") != NULL)
-        {
-            continue;
-        }
-
-        copy_len = (uint16_t)(e - p);
-        if (copy_len >= len)
-        {
-            copy_len = (uint16_t)(len - 1U);
-        }
-        memcpy(buf, p, copy_len);
-        buf[copy_len] = '\0';
-        return 0;
     }
 
-    return 1;
+    return 1U;
+}
+
+uint8_t ESP8266_ONENET_AT_QuerySntpTimeOnline(char *buf, uint16_t len)
+{
+    char rx[256];
+
+    if (buf == NULL || len == 0U)
+    {
+        return 1U;
+    }
+    buf[0] = '\0';
+
+    /* The normal online RX path has already drained pending AT text. Do not
+     * call ClearRx here: ReadUntil keeps any concurrent +IPD payload queued
+     * for the MQTT task instead of discarding it.
+     */
+    if (!g_onenet_sntp_configured)
+    {
+        if (ESP8266_ONENET_AT_SendRaw(
+                "AT+CIPSNTPCFG=1,8,\"ntp.aliyun.com\",\"cn.ntp.org.cn\"\r\n") != 0U)
+        {
+            return 1U;
+        }
+        (void)ESP8266_ONENET_AT_ReadUntil(
+            rx, sizeof(rx), ESP8266_AT_RSP_OK,
+            ESP8266_ONENET_SNTP_QUERY_TIMEOUT_MS);
+        if (strstr(rx, ESP8266_AT_RSP_OK) == NULL)
+        {
+            if (ESP8266_ONENET_AT_SendRaw(
+                    "AT+CIPSNTPCFG=1,8\r\n") != 0U)
+            {
+                return 1U;
+            }
+            (void)ESP8266_ONENET_AT_ReadUntil(
+                rx, sizeof(rx), ESP8266_AT_RSP_OK,
+                ESP8266_ONENET_SNTP_QUERY_TIMEOUT_MS);
+            if (strstr(rx, ESP8266_AT_RSP_OK) == NULL)
+            {
+                return 1U;
+            }
+        }
+        g_onenet_sntp_configured = 1U;
+        osDelay(ESP8266_ONENET_SNTP_READY_WAIT_MS);
+    }
+
+    if (ESP8266_ONENET_AT_SendRaw("AT+CIPSNTPTIME?\r\n") != 0U)
+    {
+        return 1U;
+    }
+    (void)ESP8266_ONENET_AT_ReadUntil(
+        rx, sizeof(rx), ESP8266_AT_RSP_OK,
+        ESP8266_ONENET_SNTP_QUERY_TIMEOUT_MS);
+    if (ESP8266_ONENET_AT_ParseSntpTime(rx, buf, len) != 0U)
+    {
+        g_onenet_sntp_configured = 0U;
+        return 1U;
+    }
+    return 0U;
 }
 
 uint8_t ESP8266_ONENET_AT_InitWiFi(void)
@@ -689,7 +913,7 @@ uint8_t ESP8266_ONENET_AT_InitWiFi(void)
             break;
         }
 
-        HAL_Delay(500U);
+        osDelay(500U);
         ESP8266_ONENET_AT_ClearRx();
     }
 
@@ -712,9 +936,15 @@ uint8_t ESP8266_ONENET_AT_InitWiFi(void)
         return 1;
     }
 
-    ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_NORMAL_MODE, ESP8266_AT_RSP_OK, 1000);
-    ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_SINGLE_CONN, ESP8266_AT_RSP_OK, 1000);
-    ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_IPDINFO_ON, ESP8266_AT_RSP_OK, 1000);
+    if (ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_NORMAL_MODE,
+                                  ESP8266_AT_RSP_OK, 1000U) != 0U ||
+        ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_SINGLE_CONN,
+                                  ESP8266_AT_RSP_OK, 1000U) != 0U)
+    {
+        return 1U;
+    }
+    (void)ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_IPDINFO_ON,
+                                     ESP8266_AT_RSP_OK, 1000U);
     ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_CLOSE, ESP8266_AT_RSP_OK, 1000);
     return 0;
 }

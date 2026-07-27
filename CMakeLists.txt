@@ -63,14 +63,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
-    USER_VECT_TAB_ADDRESS
-    VECT_TAB_OFFSET=0x00020000U
-)
-
-# system_stm32f4xx.c is compiled by the stm32cubemx interface/object targets.
-target_compile_definitions(stm32cubemx INTERFACE
-    USER_VECT_TAB_ADDRESS
-    VECT_TAB_OFFSET=0x00020000U
+    # Add user defined symbols
 )
 
 # Remove wrong libob.a library dependency when using cpp files

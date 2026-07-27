@@ -5,38 +5,20 @@
 #include "hmac_sha1.h"
 #include "cJSON.h"
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-#define ONENET_VERBOSE_LOG 1U
+#ifndef ONENET_VERBOSE_LOG
+#define ONENET_VERBOSE_LOG 0U
+#endif
 #define ONENET_RX_BUF_SIZE 1280U
 
 static uint16_t s_onenet_msg_id = 1U;
-static char s_ota_desired_request_id[ONENET_REQUEST_ID_MAX_LENGTH];
 
 static void OneNET_BuildPropertySetTopic(char *topic, size_t topic_size)
 {
     if (topic != NULL && topic_size > 0U)
     {
         snprintf(topic, topic_size, "$sys/%s/%s/thing/property/set",
-                 ONENET_PRODUCT_ID, ONENET_DEVICE_NAME);
-    }
-}
-
-static void OneNET_BuildDesiredGetTopic(char *topic, size_t topic_size)
-{
-    if (topic != NULL && topic_size > 0U)
-    {
-        snprintf(topic, topic_size, "$sys/%s/%s/thing/property/desired/get",
-                 ONENET_PRODUCT_ID, ONENET_DEVICE_NAME);
-    }
-}
-
-static void OneNET_BuildDesiredReplyTopic(char *topic, size_t topic_size)
-{
-    if (topic != NULL && topic_size > 0U)
-    {
-        snprintf(topic, topic_size, "$sys/%s/%s/thing/property/desired/get/reply",
                  ONENET_PRODUCT_ID, ONENET_DEVICE_NAME);
     }
 }
@@ -203,7 +185,8 @@ uint8_t OneNET_MQTT_Connect(void)
         return 1;
     }
 
-    if (rx_len >= 4U && MQTT_UnPacketRecv(rx) == MQTT_PKT_CONNACK &&
+    if (rx_len >= 4U &&
+        MQTT_UnPacketRecvEx(rx, rx_len) == MQTT_PKT_CONNACK &&
         MQTT_UnPacketConnectAck(rx) == 0)
     {
         if (ONENET_VERBOSE_LOG) printf("ONENET: MQTT connected\r\n");
@@ -220,19 +203,15 @@ uint8_t OneNET_MQTT_SubscribeControl(void)
     uint8_t rx[64];
     uint16_t rx_len = 0;
     char property_topic[128];
-    char desired_reply_topic[128];
-    const int8 *topics[2];
+    const int8 *topics[1];
     uint16_t subscribe_id;
 
     OneNET_BuildPropertySetTopic(property_topic, sizeof(property_topic));
-    OneNET_BuildDesiredReplyTopic(desired_reply_topic,
-                                  sizeof(desired_reply_topic));
     topics[0] = (const int8 *)property_topic;
-    topics[1] = (const int8 *)desired_reply_topic;
     subscribe_id = OneNET_NextPacketId();
 
     if (MQTT_PacketSubscribe(subscribe_id, MQTT_QOS_LEVEL0,
-                             topics, 2, &pkt) != 0)
+                             topics, 1, &pkt) != 0)
     {
         return 1;
     }
@@ -250,16 +229,16 @@ uint8_t OneNET_MQTT_SubscribeControl(void)
         return 1;
     }
 
-    if (rx_len == 6U && MQTT_UnPacketRecv(rx) == MQTT_PKT_SUBACK &&
-        rx[1] == 4U &&
+    if (rx_len == 5U &&
+        MQTT_UnPacketRecvEx(rx, rx_len) == MQTT_PKT_SUBACK &&
+        rx[1] == 3U &&
         rx[2] == (uint8_t)(subscribe_id >> 8U) &&
         rx[3] == (uint8_t)subscribe_id &&
-        rx[4] == (uint8_t)MQTT_QOS_LEVEL0 &&
-        rx[5] == (uint8_t)MQTT_QOS_LEVEL0)
+        rx[4] == (uint8_t)MQTT_QOS_LEVEL0)
     {
         if (ONENET_VERBOSE_LOG)
         {
-            printf("ONENET: subscribed control and OTA desired reply\r\n");
+            printf("ONENET: subscribed control\r\n");
         }
         return 0;
     }
@@ -324,151 +303,6 @@ static int8_t OneNET_ParseSwitchValue(cJSON *item)
     }
 
     return -1;
-}
-
-static cJSON *OneNET_UnwrapValue(cJSON *item)
-{
-    cJSON *value;
-
-    if (item == NULL)
-    {
-        return NULL;
-    }
-
-    value = cJSON_GetObjectItem(item, "value");
-    return value != NULL ? value : item;
-}
-
-static uint8_t OneNET_ParseUInt32(cJSON *item, uint32_t *result)
-{
-    char *end;
-    unsigned long value;
-
-    item = OneNET_UnwrapValue(item);
-    if (item == NULL || result == NULL)
-    {
-        return 1U;
-    }
-
-    if (item->type == cJSON_Number)
-    {
-        if (item->valuedouble < 0.0 || item->valuedouble > 4294967295.0)
-        {
-            return 1U;
-        }
-        *result = (uint32_t)item->valuedouble;
-        return 0U;
-    }
-
-    if (item->type == cJSON_String && item->valuestring != NULL)
-    {
-        value = strtoul(item->valuestring, &end, 0);
-        if (end == item->valuestring || *end != '\0')
-        {
-            return 1U;
-        }
-        *result = (uint32_t)value;
-        return 0U;
-    }
-
-    return 1U;
-}
-
-static int8_t OneNET_HexNibble(char value)
-{
-    if (value >= '0' && value <= '9')
-    {
-        return (int8_t)(value - '0');
-    }
-    if (value >= 'a' && value <= 'f')
-    {
-        return (int8_t)(value - 'a' + 10);
-    }
-    if (value >= 'A' && value <= 'F')
-    {
-        return (int8_t)(value - 'A' + 10);
-    }
-    return -1;
-}
-
-static uint8_t OneNET_ParseHex(cJSON *item, uint8_t *result, size_t result_size)
-{
-    const char *text;
-    size_t index;
-    int8_t high;
-    int8_t low;
-
-    item = OneNET_UnwrapValue(item);
-    if (item == NULL || item->type != cJSON_String || item->valuestring == NULL ||
-        result == NULL || strlen(item->valuestring) != result_size * 2U)
-    {
-        return 1U;
-    }
-
-    text = item->valuestring;
-    for (index = 0U; index < result_size; index++)
-    {
-        high = OneNET_HexNibble(text[index * 2U]);
-        low = OneNET_HexNibble(text[index * 2U + 1U]);
-        if (high < 0 || low < 0)
-        {
-            return 1U;
-        }
-        result[index] = (uint8_t)(((uint8_t)high << 4U) | (uint8_t)low);
-    }
-
-    return 0U;
-}
-
-static uint8_t OneNET_ParseOTA(cJSON *params, OneNET_OTACommand_t *ota)
-{
-    cJSON *url_item;
-    int8_t upgrade;
-    size_t url_length;
-
-    if (params == NULL || ota == NULL)
-    {
-        return 1U;
-    }
-
-    upgrade = OneNET_ParseSwitchValue(cJSON_GetObjectItem(params, "ota_upgrade"));
-    if (upgrade != 1)
-    {
-        return 1U;
-    }
-    ota->requested = 1U;
-
-    url_item = OneNET_UnwrapValue(cJSON_GetObjectItem(params, "ota_url"));
-    if (url_item == NULL || url_item->type != cJSON_String || url_item->valuestring == NULL)
-    {
-        return 1U;
-    }
-
-    url_length = strlen(url_item->valuestring);
-    if (url_length == 0U || url_length >= sizeof(ota->url) ||
-        (strncmp(url_item->valuestring, "http://", 7U) != 0 &&
-         strncmp(url_item->valuestring, "https://", 8U) != 0))
-    {
-        return 1U;
-    }
-
-    if (OneNET_ParseUInt32(cJSON_GetObjectItem(params, "ota_size"), &ota->image_size) != 0U ||
-        OneNET_ParseUInt32(cJSON_GetObjectItem(params, "ota_crc32"), &ota->image_crc32) != 0U ||
-        OneNET_ParseUInt32(cJSON_GetObjectItem(params, "ota_version"), &ota->image_version) != 0U ||
-        OneNET_ParseUInt32(cJSON_GetObjectItem(params, "ota_board_id"), &ota->board_id) != 0U ||
-        OneNET_ParseHex(cJSON_GetObjectItem(params, "ota_hash"),
-                        ota->image_hash, sizeof(ota->image_hash)) != 0U ||
-        OneNET_ParseHex(cJSON_GetObjectItem(params, "ota_signature"),
-                        ota->signature, sizeof(ota->signature)) != 0U ||
-        ota->image_size < 8U || ota->image_size > OTA_APPLICATION_SIZE ||
-        ota->image_version == 0U || ota->board_id != OTA_BOARD_ID)
-    {
-        return 1U;
-    }
-
-    memcpy(ota->url, url_item->valuestring, url_length + 1U);
-    ota->ready = 1U;
-    return 0U;
 }
 
 static void OneNET_ParseRequestId(cJSON *root, OneNET_Control_t *ctrl)
@@ -557,69 +391,12 @@ static uint8_t OneNET_ParseControlPayload(const char *payload, OneNET_Control_t 
         ctrl->updated = 1U;
     }
 
-    (void)OneNET_ParseOTA(params, &ctrl->ota);
-    if (ctrl->ota.requested && ctrl->request_id_valid)
-    {
-        memcpy(ctrl->ota.request_id, ctrl->request_id, sizeof(ctrl->ota.request_id));
-    }
-
     cJSON_Delete(root);
-    if (ctrl->ota.requested && ctrl->updated)
-    {
-        return 1U;
-    }
-    if (ctrl->ota.requested &&
-        (!ctrl->ota.ready || !ctrl->request_id_valid))
-    {
-        return 1U;
-    }
-    return (ctrl->updated || ctrl->ota.ready) ? 0U : 1U;
+    return ctrl->updated ? 0U : 1U;
 }
 
-static uint8_t OneNET_ParseDesiredPayload(const char *payload,
-                                          OneNET_Control_t *ctrl)
-{
-    cJSON *root;
-    cJSON *code;
-    cJSON *data;
-
-    if (payload == NULL || ctrl == NULL)
-    {
-        return 1U;
-    }
-
-    root = cJSON_Parse(payload);
-    if (root == NULL || root->type != cJSON_Object)
-    {
-        cJSON_Delete(root);
-        return 1U;
-    }
-
-    ctrl->request_received = 1U;
-    ctrl->request_source = ONENET_REQUEST_SOURCE_DESIRED;
-    OneNET_ParseRequestId(root, ctrl);
-    code = cJSON_GetObjectItem(root, "code");
-    data = cJSON_GetObjectItem(root, "data");
-    if (s_ota_desired_request_id[0] == '\0' ||
-        !ctrl->request_id_valid ||
-        strcmp(ctrl->request_id, s_ota_desired_request_id) != 0 ||
-        code == NULL || code->type != cJSON_Number || code->valueint != 200 ||
-        data == NULL || data->type != cJSON_Object)
-    {
-        cJSON_Delete(root);
-        return 1U;
-    }
-
-    (void)OneNET_ParseOTA(data, &ctrl->ota);
-    cJSON_Delete(root);
-    if (ctrl->ota.requested && !ctrl->ota.ready)
-    {
-        return 1U;
-    }
-    return 0U;
-}
-
-uint8_t OneNET_MQTT_Process(OneNET_Control_t *ctrl, uint32_t timeout_ms)
+OneNET_MQTTRxResult_t OneNET_MQTT_Process(OneNET_Control_t *ctrl,
+                                          uint32_t timeout_ms)
 {
     uint8_t rx[ONENET_RX_BUF_SIZE];
     uint16_t rx_len = 0;
@@ -630,58 +407,69 @@ uint8_t OneNET_MQTT_Process(OneNET_Control_t *ctrl, uint32_t timeout_ms)
     uint16 payload_len = 0;
     uint8 qos = 0;
     uint16 pkt_id = 0;
-    uint8_t ret = 1;
+    uint8_t parse_result;
+    ESP8266_ONENET_AT_Result_t transport_result;
+    OneNET_MQTTRxResult_t result = ONENET_MQTT_RX_PROTOCOL_ERROR;
     char property_topic[128];
-    char desired_reply_topic[128];
 
     if (ctrl == NULL)
     {
-        return 1;
+        return ONENET_MQTT_RX_PROTOCOL_ERROR;
     }
 
-    ret = ESP8266_ONENET_AT_WaitTcpPacket(rx, sizeof(rx), &rx_len, timeout_ms);
-    if (ret != 0)
+    transport_result = ESP8266_ONENET_AT_WaitTcpPacket(
+        rx, sizeof(rx), &rx_len, timeout_ms);
+    if (transport_result == ESP8266_ONENET_AT_TIMEOUT)
     {
-        return ret;
+        return ONENET_MQTT_RX_IDLE;
     }
-    rx[rx_len] = 0U;
-    ret = 1;
+    if (transport_result == ESP8266_ONENET_AT_LINK_CLOSED)
+    {
+        return ONENET_MQTT_RX_LINK_CLOSED;
+    }
+    if (transport_result != ESP8266_ONENET_AT_OK || rx_len == 0U)
+    {
+        return ONENET_MQTT_RX_PROTOCOL_ERROR;
+    }
 
-    type = MQTT_UnPacketRecv(rx);
+    rx[rx_len] = 0U;
+    type = MQTT_UnPacketRecvEx(rx, rx_len);
     if (type == MQTT_PKT_PUBLISH)
     {
-        if (MQTT_UnPacketPublish(rx, &topic, &topic_len, &payload, &payload_len, &qos, &pkt_id) == 0)
+        if (MQTT_UnPacketPublishEx(rx, rx_len, &topic, &topic_len,
+                                  &payload, &payload_len, &qos,
+                                  &pkt_id) == 0U)
         {
             OneNET_BuildPropertySetTopic(property_topic, sizeof(property_topic));
-            OneNET_BuildDesiredReplyTopic(desired_reply_topic,
-                                          sizeof(desired_reply_topic));
             if (topic != NULL && payload != NULL &&
                 strcmp((const char *)topic, property_topic) == 0)
             {
                 if (ONENET_VERBOSE_LOG) printf("ONENET: CTRL topic=%s payload=%s\r\n", topic, payload);
-                ret = OneNET_ParseControlPayload((const char *)payload, ctrl);
+                parse_result = OneNET_ParseControlPayload(
+                    (const char *)payload, ctrl);
+                result = parse_result == 0U ?
+                         ONENET_MQTT_RX_PROPERTY_SET :
+                         ONENET_MQTT_RX_PAYLOAD_ERROR;
                 if (ONENET_VERBOSE_LOG)
                 {
-                    printf("ONENET: CTRL parse ret=%u feng=%d led=%d load=%d qi=%d updated=%u ota=%u\r\n",
-                           ret, ctrl->home_feng, ctrl->home_led,
-                           ctrl->home_load, ctrl->qi, ctrl->updated, ctrl->ota.ready);
+                    printf("ONENET: CTRL parse ret=%u feng=%d led=%d load=%d qi=%d updated=%u\r\n",
+                           parse_result, ctrl->home_feng, ctrl->home_led,
+                           ctrl->home_load, ctrl->qi, ctrl->updated);
                 }
             }
-            else if (topic != NULL && payload != NULL &&
-                     strcmp((const char *)topic, desired_reply_topic) == 0)
+            else
             {
-                ret = OneNET_ParseDesiredPayload((const char *)payload, ctrl);
-                if (ONENET_VERBOSE_LOG)
-                {
-                    printf("ONENET: OTA desired parse ret=%u requested=%u ready=%u\r\n",
-                           ret, ctrl->ota.requested, ctrl->ota.ready);
-                }
+                result = ONENET_MQTT_RX_IGNORED;
             }
         }
     }
-    else if (type == MQTT_PKT_PINGRESP || type == MQTT_PKT_PUBACK || type == MQTT_PKT_SUBACK)
+    else if (type == MQTT_PKT_PINGRESP)
     {
-        ret = 0;
+        result = ONENET_MQTT_RX_PING_RESPONSE;
+    }
+    else if (type == MQTT_PKT_PUBACK || type == MQTT_PKT_SUBACK)
+    {
+        result = ONENET_MQTT_RX_ACK;
     }
 
     if (topic != NULL)
@@ -693,7 +481,7 @@ uint8_t OneNET_MQTT_Process(OneNET_Control_t *ctrl, uint32_t timeout_ms)
         MQTT_FreeBuffer(payload);
     }
 
-    return ret;
+    return result;
 }
 
 static uint8_t OneNET_PublishTopic(const char *topic,
@@ -724,43 +512,6 @@ static uint8_t OneNET_PublishTopic(const char *topic,
     }
 
     return OneNET_SendMqttPacket(&pkt);
-}
-
-uint8_t OneNET_MQTT_RequestOTADesired(uint8_t start_new_request)
-{
-    char topic[128];
-    char payload[320];
-    int body_len;
-
-    if (start_new_request || s_ota_desired_request_id[0] == '\0')
-    {
-        body_len = snprintf(s_ota_desired_request_id,
-                            sizeof(s_ota_desired_request_id),
-                            "ota-%lu", (unsigned long)HAL_GetTick());
-        if (body_len <= 0 ||
-            (size_t)body_len >= sizeof(s_ota_desired_request_id))
-        {
-            return 1U;
-        }
-    }
-
-    body_len = snprintf(payload, sizeof(payload),
-        "{\"id\":\"%s\",\"version\":\"1.0\",\"params\":["
-        "\"ota_upgrade\",\"ota_url\",\"ota_size\",\"ota_crc32\","
-        "\"ota_version\",\"ota_board_id\",\"ota_hash\",\"ota_signature\"]}",
-        s_ota_desired_request_id);
-    if (body_len <= 0 || (size_t)body_len >= sizeof(payload))
-    {
-        return 1U;
-    }
-
-    OneNET_BuildDesiredGetTopic(topic, sizeof(topic));
-    return OneNET_PublishTopic(topic, payload, MQTT_QOS_LEVEL0);
-}
-
-void OneNET_MQTT_ClearOTADesiredRequest(void)
-{
-    s_ota_desired_request_id[0] = '\0';
 }
 
 uint8_t OneNET_MQTT_ReplyPropertySet(const char *request_id,
@@ -801,52 +552,25 @@ uint8_t OneNET_MQTT_ReplyPropertySet(const char *request_id,
 
 static uint8_t OneNET_PublishPropertyPayload(const char *payload)
 {
-    MQTT_PACKET_STRUCTURE pkt = {NULL, 0, 0, 0};
-    uint16_t body_len;
+    char topic[104];
+    int topic_len;
 
-    if (payload == NULL)
+    if (payload == NULL || payload[0] == '\0')
     {
-        return 1;
+        return 1U;
     }
 
-    body_len = (uint16_t)strlen(payload);
-    if (body_len == 0U)
+    topic_len = snprintf(topic, sizeof(topic),
+                         "$sys/%s/%s/thing/property/post",
+                         ONENET_PRODUCT_ID, ONENET_DEVICE_NAME);
+    if (topic_len <= 0 || (size_t)topic_len >= sizeof(topic))
     {
-        return 1;
+        return 1U;
     }
 
-    if (MQTT_PacketSaveData((const int8 *)ONENET_PRODUCT_ID,
-                            ONENET_DEVICE_NAME,
-                            (int16)body_len,
-                            NULL,
-                            &pkt) != 0)
-    {
-        return 1;
-    }
-
-    if ((pkt._len + body_len) > pkt._size)
-    {
-        MQTT_DeleteBuffer(&pkt);
-        return 1;
-    }
-
-    memcpy(&pkt._data[pkt._len], payload, body_len);
-    pkt._len += body_len;
-
-    if (ONENET_VERBOSE_LOG)
-    {
-        printf("ONENET TX JSON len=%u\r\n", body_len);
-    }
-
-    uint8_t send_ret = OneNET_SendMqttPacket(&pkt);
-
-
-    
-    if (ONENET_VERBOSE_LOG)
-    {
-        printf("ONENET TX ret=%u\r\n", send_ret);
-    }
-    return send_ret;
+    /* Periodic properties are QoS 0. The legacy helper used QoS 1 with a
+     * fixed packet id but did not serialize or match PUBACK responses. */
+    return OneNET_PublishTopic(topic, payload, MQTT_QOS_LEVEL0);
 }
 
 static unsigned int OneNET_FloatToIntRange(float value, unsigned int max_value)
@@ -946,51 +670,6 @@ uint8_t OneNET_UploadSwitchStates(uint8_t home_feng, uint8_t home_led,
     if (body_len == 0U || body_len >= sizeof(payload))
     {
         return 1;
-    }
-
-    return OneNET_PublishPropertyPayload(payload);
-}
-
-uint8_t OneNET_UploadOTAStatus(uint32_t current_version,
-                               uint32_t target_version,
-                               OTA_State_t state,
-                               uint8_t progress,
-                               OTA_Result_t result,
-                               OTA_Error_t error)
-{
-    char payload[384];
-    int body_len;
-
-    if (state < OTA_STATE_CONFIRMED || state > OTA_STATE_RECOVERY ||
-        result > OTA_RESULT_FAILED || error < OTA_ERROR_NONE || error > OTA_ERROR_METADATA)
-    {
-        return 1U;
-    }
-    if (progress > 100U)
-    {
-        progress = 100U;
-    }
-
-    body_len = snprintf(payload, sizeof(payload),
-        "{\"id\":\"%lu\",\"version\":\"1.0\",\"params\":{"
-        "\"fw_version\":{\"value\":%lu},"
-        "\"ota_target_version\":{\"value\":%lu},"
-        "\"ota_state\":{\"value\":%u},"
-        "\"ota_progress\":{\"value\":%u},"
-        "\"ota_result\":{\"value\":%ld},"
-        "\"ota_error\":{\"value\":%ld}"
-        "}}",
-        (unsigned long)HAL_GetTick(),
-        (unsigned long)current_version,
-        (unsigned long)target_version,
-        (unsigned int)state,
-        (unsigned int)progress,
-        (long)result,
-        (long)error);
-
-    if (body_len <= 0 || (size_t)body_len >= sizeof(payload))
-    {
-        return 1U;
     }
 
     return OneNET_PublishPropertyPayload(payload);

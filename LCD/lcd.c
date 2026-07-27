@@ -633,6 +633,13 @@ void HAL_SRAM_MspInit(SRAM_HandleTypeDef *hsram)
     HAL_GPIO_Init(GPIOG, &gpio_init_struct);            /* PG12 = FSMC_NE4 = LCD_CS */
 }
 
+static uint8_t lcd_id_is_valid(uint16_t id)
+{
+    return (id == 0x7789U || id == 0x9341U || id == 0x5310U ||
+            id == 0x7796U || id == 0x5510U || id == 0x9806U ||
+            id == 0x1963U) ? 1U : 0U;
+}
+
 /**
  * @brief       锟斤拷始锟斤拷LCD
  *   @note      锟矫筹拷始锟斤拷锟斤拷锟斤拷锟斤拷锟皆筹拷始锟斤拷锟斤拷锟斤拷锟酵号碉拷LCD(锟斤拷锟斤拷锟�.c锟侥硷拷锟斤拷前锟斤拷锟斤拷锟斤拷锟�)
@@ -645,6 +652,7 @@ void lcd_init(void)
     GPIO_InitTypeDef gpio_init_struct;
     FSMC_NORSRAM_TimingTypeDef fsmc_read_handle;
     FSMC_NORSRAM_TimingTypeDef fsmc_write_handle;
+    uint8_t id_retry;
 
     LCD_CS_GPIO_CLK_ENABLE();   /* LCD_CS锟斤拷时锟斤拷使锟斤拷 */
     LCD_WR_GPIO_CLK_ENABLE();   /* LCD_WR锟斤拷时锟斤拷使锟斤拷 */
@@ -671,6 +679,8 @@ void lcd_init(void)
     gpio_init_struct.Pin = LCD_BL_GPIO_PIN;
     gpio_init_struct.Mode = GPIO_MODE_OUTPUT_PP;            /* 锟斤拷锟斤拷锟斤拷锟� */
     HAL_GPIO_Init(LCD_BL_GPIO_PORT, &gpio_init_struct);     /* LCD_BL锟斤拷锟斤拷模式锟斤拷锟斤拷(锟斤拷锟斤拷锟斤拷锟�) */
+
+    LCD_BL(0);
 
     g_sram_handle.Instance = FSMC_NORSRAM_DEVICE;
     g_sram_handle.Extended = FSMC_NORSRAM_EXTENDED_DEVICE;
@@ -701,8 +711,18 @@ void lcd_init(void)
                                                         /* 注锟解：某些液锟斤拷锟斤拷锟斤拷IC锟斤拷写锟脚猴拷锟斤拷锟斤拷锟斤拷锟斤拷锟斤拷也锟斤拷50ns */
     fsmc_write_handle.AccessMode = FSMC_ACCESS_MODE_A;  /* 模式A */
     
-    HAL_SRAM_Init(&g_sram_handle, &fsmc_read_handle, &fsmc_write_handle);
+    if (HAL_SRAM_Init(&g_sram_handle, &fsmc_read_handle,
+                      &fsmc_write_handle) != HAL_OK)
+    {
+        printf("LCD FSMC init failed\r\n");
+        return;
+    }
     delay_ms(50);
+
+    for (id_retry = 0U; id_retry < 3U; id_retry++)
+    {
+        lcd_wr_regno(0x01U);
+        delay_ms(120);
 
     /* 锟斤拷锟斤拷9341 ID锟侥讹拷取 */
     lcd_wr_regno(0xD3);
@@ -791,7 +811,19 @@ void lcd_init(void)
      * 锟斤拷锟斤拷(锟斤拷锟斤拷锟斤拷f_putc锟斤拷锟斤拷), 锟斤拷锟斤拷, 锟斤拷锟斤拷锟绞硷拷锟斤拷锟斤拷锟�1, 锟斤拷锟斤拷锟斤拷锟轿碉拷锟斤拷锟斤拷
      * 锟斤拷锟斤拷 printf 锟斤拷锟� !!!!!!!
      */
+        if (lcd_id_is_valid(lcddev.id) != 0U)
+        {
+            break;
+        }
+    }
+
     printf("LCD ID:%x\r\n", lcddev.id); /* 锟斤拷印LCD ID */
+
+    if (lcd_id_is_valid(lcddev.id) == 0U)
+    {
+        printf("LCD ID detection failed\r\n");
+        return;
+    }
 
     if (lcddev.id == 0x7789)
     {
@@ -849,8 +881,8 @@ void lcd_init(void)
     }
 
     lcd_display_dir(0); /* 默锟斤拷为锟斤拷锟斤拷 */
-    LCD_BL(1);          /* 锟斤拷锟斤拷锟斤拷锟斤拷 */
     lcd_clear(WHITE);
+    LCD_BL(1);          /* Enable only after reset, controller init and clear. */
 }
 
 /**

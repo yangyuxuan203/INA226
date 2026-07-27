@@ -34,9 +34,6 @@ mx.scratch
 *.xlsx
 *.zip
 
-# Local OTA signing material. Never commit a private key.
-/tools/config/*.pem
-
 # Device credentials. Commit only the adjacent .example templates.
 /Core/Inc/wifi_config.h
 /Core/Inc/onenet_config.h

@@ -1,4 +1,5 @@
 #include "esp8266_at.h"
+#include "cmsis_os.h"
 #include "usart.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -99,6 +100,7 @@ uint8_t ESP8266_AT_SendBytes(const uint8_t *data, uint16_t len)
             HAL_UART_AbortTransmit(&huart3);
             return 1;
         }
+        osDelay(1U);
     }
 
     return 0;
@@ -139,7 +141,7 @@ uint16_t ESP8266_AT_ReadUntil(char *buf, uint16_t len, const char *expect, uint3
         }
         else
         {
-            HAL_Delay(1);
+            osDelay(1U);
         }
     }
 
@@ -198,7 +200,7 @@ uint8_t ESP8266_AT_JoinAp(const char *ssid, const char *password)
             return 0;
         }
 
-        HAL_Delay(1000);
+        osDelay(1000U);
     }
 
     return ESP8266_AT_SendCmd("AT+CWJAP?", ESP8266_AT_RSP_OK, 3000);
@@ -324,7 +326,7 @@ uint8_t ESP8266_AT_WaitTcpPacket(uint8_t *payload, uint16_t len, uint16_t *out_l
         ch = ESP8266_AT_ReadDmaByte();
         if (ch < 0)
         {
-            HAL_Delay(1);
+            osDelay(1U);
             continue;
         }
 
@@ -377,7 +379,7 @@ uint8_t ESP8266_AT_WaitTcpPacket(uint8_t *payload, uint16_t len, uint16_t *out_l
             ch = ESP8266_AT_ReadDmaByte();
             if (ch < 0)
             {
-                HAL_Delay(1);
+                osDelay(1U);
                 continue;
             }
             payload[i++] = (uint8_t)ch;

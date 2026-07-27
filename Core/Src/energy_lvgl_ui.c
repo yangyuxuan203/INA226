@@ -1,18 +1,14 @@
 #include "energy_lvgl_ui.h"
 
-#include "firmware_version.h"
+#include "app_health.h"
 #include "lv_port_energy.h"
 #include "main.h"
-#include "ota_update.h"
 #include "lvgl.h"
 #include "cmsis_os.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
 
-#define OTA_APPLICATION_CONFIRM_DELAY_MS  10000U
-#define OTA_APPLICATION_CONFIRM_RETRY_MS   1000U
-#define OTA_APPLICATION_CONFIRM_RETRIES       3U
 #include <stdarg.h>
 
 #define UI_W                 480
@@ -415,38 +411,7 @@ static void update_timer_cb(lv_timer_t *timer)
 
 static void show_ota_page(void)
 {
-    OTA_Metadata_t metadata;
-    lv_obj_t *version_label;
-    lv_obj_t *status_label;
-    uint32_t version = FW_VERSION_NUMBER;
-    const char *status = "System image verified";
-    char version_text[40];
     lv_obj_t *scr = lv_obj_create(NULL);
-
-    if (OTA_Metadata_Read(&metadata) == 0U)
-    {
-        version = metadata.installed_version;
-        if (metadata.state == OTA_STATE_CONFIRMED &&
-            metadata.last_result == OTA_RESULT_SUCCESS)
-        {
-            status = "Upgrade completed and verified";
-        }
-        else if (metadata.state == OTA_STATE_CONFIRMED &&
-                 metadata.last_result == OTA_RESULT_FAILED)
-        {
-            status = "Upgrade failed; current image kept";
-        }
-        else if (metadata.state == OTA_STATE_TRIAL)
-        {
-            status = "Firmware confirmation pending";
-            version = metadata.target_version;
-        }
-    }
-
-    (void)snprintf(version_text, sizeof(version_text), "Firmware %lu.%lu.%lu",
-                   (unsigned long)((version >> 16U) & 0xFFU),
-                   (unsigned long)((version >> 8U) & 0xFFU),
-                   (unsigned long)(version & 0xFFU));
 
     lv_obj_set_style_bg_color(scr, c_bg(), 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -454,18 +419,11 @@ static void show_ota_page(void)
     (void)box(scr, 52, 250, 376, 250, c_panel(), c_ai(), 16);
     (void)dot(scr, 206, 285, 68, c_badge());
     (void)dot(scr, 224, 303, 32, c_ai());
-    version_label = label(scr, version_text, 80, 374,
-                          &lv_font_montserrat_20, c_text());
-    lv_obj_set_width(version_label, 320);
-    lv_obj_set_style_text_align(version_label, LV_TEXT_ALIGN_CENTER, 0);
-    status_label = label(scr, status, 70, 415,
-                         &lv_font_montserrat_16, c_muted());
-    lv_obj_set_width(status_label, 340);
-    lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, 0);
-    status_label = label(scr, "Entering dashboard...", 70, 446,
-                         &lv_font_montserrat_14, c_ai());
-    lv_obj_set_width(status_label, 340);
-    lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, 0);
+    label(scr, "OTA Check", 176, 374, &lv_font_montserrat_20, c_text());
+    label(scr, "No upgrade package found", 132, 415,
+          &lv_font_montserrat_16, c_muted());
+    label(scr, "Entering dashboard...", 154, 446,
+          &lv_font_montserrat_14, c_ai());
     load_screen(scr);
 }
 
@@ -614,10 +572,6 @@ static void show_detail(EnergyPage_t page)
 void EnergyLvgl_Task(void const *argument)
 {
     lv_timer_t *ota_timer;
-    uint32_t health_start_tick;
-    uint32_t last_confirm_attempt = 0U;
-    uint8_t confirm_failures = 0U;
-    uint8_t application_confirmed = 0U;
 
     (void)argument;
 
@@ -631,29 +585,11 @@ void EnergyLvgl_Task(void const *argument)
         NVIC_SystemReset();
     }
     show_ota_page();
-    health_start_tick = HAL_GetTick();
 
     for (;;)
     {
-        uint32_t now;
-
+        AppHealth_Heartbeat(APP_HEALTH_TASK_UI);
         lv_timer_handler();
-        now = HAL_GetTick();
-        if (!application_confirmed && ota_timer != NULL && s_update_timer != NULL &&
-            (now - health_start_tick) >= OTA_APPLICATION_CONFIRM_DELAY_MS &&
-            (last_confirm_attempt == 0U ||
-             (now - last_confirm_attempt) >= OTA_APPLICATION_CONFIRM_RETRY_MS))
-        {
-            last_confirm_attempt = now;
-            if (OTA_Metadata_ConfirmApplication(FW_VERSION_NUMBER) == 0U)
-            {
-                application_confirmed = 1U;
-            }
-            else if (++confirm_failures >= OTA_APPLICATION_CONFIRM_RETRIES)
-            {
-                NVIC_SystemReset();
-            }
-        }
         osDelay(10);
     }
 }

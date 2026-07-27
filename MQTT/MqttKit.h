@@ -106,6 +106,7 @@ void MQTT_DeleteBuffer(MQTT_PACKET_STRUCTURE *mqttPacket);
 
 /*--------------------------------解包--------------------------------*/
 uint8 MQTT_UnPacketRecv(uint8 *dataPtr);
+uint8 MQTT_UnPacketRecvEx(const uint8 *dataPtr, uint32 data_len);
 
 /*--------------------------------登录组包--------------------------------*/
 uint8 MQTT_PacketConnect(const int8 *user, const int8 *password, const int8 *devid,
@@ -152,6 +153,10 @@ uint8 MQTT_PacketPublish(uint16 pkt_id, const int8 *topic,
 
 /*--------------------------------发布消息回复解包--------------------------------*/
 uint8 MQTT_UnPacketPublish(uint8 *rev_data, int8 **topic, uint16 *topic_len, int8 **payload, uint16 *payload_len, uint8 *qos, uint16 *pkt_id);
+uint8 MQTT_UnPacketPublishEx(const uint8 *rev_data, uint32 rev_len,
+                            int8 **topic, uint16 *topic_len,
+                            int8 **payload, uint16 *payload_len,
+                            uint8 *qos, uint16 *pkt_id);
 
 /*--------------------------------发布消息的Ack组包--------------------------------*/
 uint1 MQTT_PacketPublishAck(uint16 pkt_id, MQTT_PACKET_STRUCTURE *mqttPacket);

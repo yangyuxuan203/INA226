@@ -39,6 +39,15 @@
 #define CMD_TOPIC_PREFIX		"$creq"
 
 
+static uint8 MQTT_TopicIsCommand(const uint8 *topic, uint16 topic_len)
+{
+	const uint16 prefix_len = (uint16)(sizeof(CMD_TOPIC_PREFIX) - 1U);
+
+	return topic != NULL && topic_len >= prefix_len &&
+		   memcmp(topic, CMD_TOPIC_PREFIX, prefix_len) == 0 ? 1U : 0U;
+}
+
+
 //==========================================================
 //	函数名称：	EDP_NewBuffer
 //
@@ -195,7 +204,8 @@ uint8 MQTT_UnPacketRecv(uint8 *dataPtr)
 		if(remain_len < ((uint16)msgPtr[0] << 8 | msgPtr[1]) + 2)
 			return 255;
 		
-		if(strstr((int8 *)msgPtr + 2, CMD_TOPIC_PREFIX) != NULL)	//如果是命令下发
+		if(MQTT_TopicIsCommand(msgPtr + 2,
+								(uint16)msgPtr[0] << 8 | msgPtr[1]))	//如果是命令下发
 			status = MQTT_PKT_CMD;
 		else
 			status = MQTT_PKT_PUBLISH;
@@ -461,12 +471,21 @@ uint8 MQTT_UnPacketConnectAck(uint8 *rev_data)
 uint1 MQTT_PacketSaveData(const int8 *pro_id, const char *dev_name,
 								int16 send_len, int8 *type_bin_head, MQTT_PACKET_STRUCTURE *mqttPacket)
 {
+	char topic_buf[128];
+	int topic_len;
 
-	char topic_buf[48];
+	(void)type_bin_head;
+	if(pro_id == NULL || dev_name == NULL || send_len < 0 ||
+	   mqttPacket == NULL)
+		return 1;
 	
-	snprintf(topic_buf, sizeof(topic_buf), "$sys/%s/%s/thing/property/post", pro_id, dev_name);
+	topic_len = snprintf(topic_buf, sizeof(topic_buf),
+						 "$sys/%s/%s/thing/property/post", pro_id, dev_name);
+	if(topic_len <= 0 || (uint32)topic_len >= sizeof(topic_buf))
+		return 1;
 	
-	if(MQTT_PacketPublish(MQTT_PUBLISH_ID, topic_buf, NULL, send_len + 0, MQTT_QOS_LEVEL1, 0, 1, mqttPacket) == 0)
+	if(MQTT_PacketPublish(MQTT_PUBLISH_ID, topic_buf, NULL, (uint32)send_len,
+						  MQTT_QOS_LEVEL1, 0, 1, mqttPacket) == 0)
 	{
 //		mqttPacket->_data[mqttPacket->_len++] = type;					//类型
 //		
@@ -607,7 +626,6 @@ uint1 MQTT_PacketCmdResp(const int8 *cmdid, const int8 *req, MQTT_PACKET_STRUCTU
 {
 	
 	uint16 cmdid_len = strlen(cmdid);
-	uint16 req_len = strlen(req);
 	_Bool status = 0;
 	
 	int8 *payload = MQTT_MallocBuffer(cmdid_len + 7);
@@ -1046,7 +1064,7 @@ uint8 MQTT_UnPacketPublish(uint8 *rev_data, int8 **topic, uint16 *topic_len, int
 	if(remain_len < *topic_len + 2)
 		return 255;
 	
-	if(strstr((int8 *)msgPtr + 2, CMD_TOPIC_PREFIX) != NULL)	//如果是命令下发
+	if(MQTT_TopicIsCommand(msgPtr + 2, *topic_len))
 		return MQTT_PKT_CMD;
 	
 	switch(*qos)
@@ -1068,6 +1086,7 @@ uint8 MQTT_UnPacketPublish(uint8 *rev_data, int8 **topic, uint16 *topic_len, int
 			if(*payload == NULL)								//如果失败
 			{
 				MQTT_FreeBuffer(*topic);						//则需要把topic的内存释放掉
+				*topic = NULL;
 				return 255;
 			}
 			
@@ -1079,11 +1098,11 @@ uint8 MQTT_UnPacketPublish(uint8 *rev_data, int8 **topic, uint16 *topic_len, int
 		case MQTT_QOS_LEVEL1:
 		case MQTT_QOS_LEVEL2:
 			
-			if(*topic_len + 2 > remain_len)
+			if((uint32)*topic_len + 4U > remain_len)
 				return 255;
 			
 			*pkt_id = (uint16)msgPtr[*topic_len + 2] << 8 | msgPtr[*topic_len + 3];
-			if(pkt_id == 0)
+			if(*pkt_id == 0)
 				return 255;
 			
 			*topic = MQTT_MallocBuffer(*topic_len + 1);			//为topic分配内存
@@ -1098,6 +1117,7 @@ uint8 MQTT_UnPacketPublish(uint8 *rev_data, int8 **topic, uint16 *topic_len, int
 			if(*payload == NULL)								//如果失败
 			{
 				MQTT_FreeBuffer(*topic);						//则需要把topic的内存释放掉
+				*topic = NULL;
 				return 255;
 			}
 			
@@ -1110,12 +1130,13 @@ uint8 MQTT_UnPacketPublish(uint8 *rev_data, int8 **topic, uint16 *topic_len, int
 			return 255;
 	}
 	
-	if(strchr((int8 *)topic, '+') || strchr((int8 *)topic, '#'))
+	if(strchr(*topic, '+') || strchr(*topic, '#'))
 		return 255;
 
 	return 0;
 
 }
+
 
 //==========================================================
 //	函数名称：	MQTT_PacketPublishAck
@@ -1389,4 +1410,206 @@ uint1 MQTT_PacketPing(MQTT_PACKET_STRUCTURE *mqttPacket)
 	
 	return 0;
 
+}
+
+
+static uint8 MQTT_GetPacketBoundsSafe(const uint8 *data, uint32 data_len,
+									  uint32 *header_len,
+									  uint32 *remain_len)
+{
+	int32 encoded_len;
+	uint32 available_length_bytes;
+
+	if(data == NULL || header_len == NULL || remain_len == NULL || data_len < 2U)
+		return 0U;
+
+	available_length_bytes = data_len - 1U;
+	if(available_length_bytes > 4U)
+		available_length_bytes = 4U;
+
+	encoded_len = MQTT_ReadLength(data + 1, (int32)available_length_bytes,
+								 remain_len);
+	if(encoded_len <= 0)
+		return 0U;
+
+	*header_len = 1U + (uint32)encoded_len;
+	if(*remain_len > (0xFFFFFFFFU - *header_len))
+		return 0U;
+
+	return (*header_len + *remain_len) <= data_len ? 1U : 0U;
+}
+
+static uint8 MQTT_ValidateFixedHeaderSafe(const uint8 *data,
+										 uint8 type,
+										 uint32 remain_len)
+{
+	uint8 flags;
+	uint8 qos;
+
+	if(data == NULL)
+		return 0U;
+
+	flags = data[0] & 0x0FU;
+	if(type == MQTT_PKT_PUBLISH)
+	{
+		qos = (flags & 0x06U) >> 1;
+		if(qos > MQTT_QOS_LEVEL2 ||
+		   (qos == MQTT_QOS_LEVEL0 && (flags & 0x08U) != 0U))
+			return 0U;
+	}
+	else if(type == MQTT_PKT_PUBREL || type == MQTT_PKT_SUBSCRIBE ||
+			type == MQTT_PKT_UNSUBSCRIBE)
+	{
+		if(flags != 0x02U)
+			return 0U;
+	}
+	else if(flags != 0U)
+	{
+		return 0U;
+	}
+
+	switch(type)
+	{
+		case MQTT_PKT_CONNACK:
+			return remain_len == 2U ? 1U : 0U;
+
+		case MQTT_PKT_PUBACK:
+		case MQTT_PKT_PUBREC:
+		case MQTT_PKT_PUBREL:
+		case MQTT_PKT_PUBCOMP:
+		case MQTT_PKT_UNSUBACK:
+			return remain_len == 2U ? 1U : 0U;
+
+		case MQTT_PKT_SUBACK:
+			return remain_len >= 3U ? 1U : 0U;
+
+		case MQTT_PKT_PINGREQ:
+		case MQTT_PKT_PINGRESP:
+		case MQTT_PKT_DISCONNECT:
+			return remain_len == 0U ? 1U : 0U;
+
+		default:
+			return 1U;
+	}
+}
+
+uint8 MQTT_UnPacketRecvEx(const uint8 *dataPtr, uint32 data_len)
+{
+	uint8 type;
+	uint32 header_len = 0U;
+	uint32 remain_len = 0U;
+	uint32 prefix_len;
+	uint16 local_topic_len;
+	const uint8 *msg_ptr;
+
+	if(MQTT_GetPacketBoundsSafe(dataPtr, data_len,
+								&header_len, &remain_len) == 0U)
+		return 255U;
+
+	type = dataPtr[0] >> 4;
+	if(type < MQTT_PKT_CONNECT || type > MQTT_PKT_DISCONNECT)
+		return 255U;
+	if(MQTT_ValidateFixedHeaderSafe(dataPtr, type, remain_len) == 0U)
+		return 255U;
+	if(type != MQTT_PKT_PUBLISH)
+		return type;
+
+	if(remain_len < 2U)
+		return 255U;
+	msg_ptr = dataPtr + header_len;
+	local_topic_len = (uint16)(((uint16)msg_ptr[0] << 8) | msg_ptr[1]);
+	if(local_topic_len == 0U ||
+	   remain_len < ((uint32)local_topic_len + 2U))
+		return 255U;
+
+	prefix_len = (uint32)strlen(CMD_TOPIC_PREFIX);
+	if((uint32)local_topic_len >= prefix_len &&
+	   memcmp(msg_ptr + 2U, CMD_TOPIC_PREFIX, prefix_len) == 0)
+		return MQTT_PKT_CMD;
+
+	return MQTT_PKT_PUBLISH;
+}
+
+uint8 MQTT_UnPacketPublishEx(const uint8 *rev_data, uint32 rev_len,
+							 int8 **topic, uint16 *topic_len,
+							 int8 **payload, uint16 *payload_len,
+							 uint8 *qos, uint16 *pkt_id)
+{
+	uint32 header_len = 0U;
+	uint32 remain_len = 0U;
+	uint32 payload_offset;
+	uint32 local_payload_len;
+	uint16 local_topic_len;
+	uint16 i;
+	const uint8 *msg_ptr;
+
+	if(topic == NULL || topic_len == NULL || payload == NULL ||
+	   payload_len == NULL || qos == NULL || pkt_id == NULL)
+		return 255U;
+
+	*topic = NULL;
+	*payload = NULL;
+	*topic_len = 0U;
+	*payload_len = 0U;
+	*qos = 0U;
+	*pkt_id = 0U;
+
+	if(MQTT_GetPacketBoundsSafe(rev_data, rev_len,
+								&header_len, &remain_len) == 0U ||
+	   (rev_data[0] >> 4) != MQTT_PKT_PUBLISH || remain_len < 2U ||
+	   MQTT_ValidateFixedHeaderSafe(rev_data, MQTT_PKT_PUBLISH,
+								  remain_len) == 0U)
+		return 255U;
+
+	*qos = (rev_data[0] & 0x06U) >> 1;
+	if(*qos > MQTT_QOS_LEVEL2)
+		return 255U;
+
+	msg_ptr = rev_data + header_len;
+	local_topic_len = (uint16)(((uint16)msg_ptr[0] << 8) | msg_ptr[1]);
+	if(local_topic_len == 0U ||
+	   remain_len < ((uint32)local_topic_len + 2U))
+		return 255U;
+
+	for(i = 0U; i < local_topic_len; i++)
+	{
+		if(msg_ptr[2U + i] == '+' || msg_ptr[2U + i] == '#')
+			return 255U;
+	}
+
+	payload_offset = 2U + (uint32)local_topic_len;
+	if(*qos != MQTT_QOS_LEVEL0)
+	{
+		if(remain_len < (payload_offset + 2U))
+			return 255U;
+		*pkt_id = (uint16)(((uint16)msg_ptr[payload_offset] << 8) |
+						   msg_ptr[payload_offset + 1U]);
+		if(*pkt_id == 0U)
+			return 255U;
+		payload_offset += 2U;
+	}
+
+	local_payload_len = remain_len - payload_offset;
+	if(local_payload_len > 0xFFFFU)
+		return 255U;
+
+	*topic = MQTT_MallocBuffer((uint32)local_topic_len + 1U);
+	if(*topic == NULL)
+		return 255U;
+	memset(*topic, 0, (uint32)local_topic_len + 1U);
+	memcpy(*topic, msg_ptr + 2U, local_topic_len);
+
+	*payload = MQTT_MallocBuffer(local_payload_len + 1U);
+	if(*payload == NULL)
+	{
+		MQTT_FreeBuffer(*topic);
+		*topic = NULL;
+		return 255U;
+	}
+	memset(*payload, 0, local_payload_len + 1U);
+	memcpy(*payload, msg_ptr + payload_offset, local_payload_len);
+
+	*topic_len = local_topic_len;
+	*payload_len = (uint16)local_payload_len;
+	return 0U;
 }
