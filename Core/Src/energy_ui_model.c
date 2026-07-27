@@ -1,5 +1,6 @@
 #include "energy_lvgl_ui.h"
 
+#include "app_config.h"
 #include "app_state.h"
 #include "can_app.h"
 #include "energy_service.h"
@@ -78,6 +79,7 @@ void EnergyLvgl_GetSnapshot(EnergyLvglSnapshot_t *snapshot)
         state.wearable.valid ? state.wearable.state : 0U;
 
     snapshot->ai_valid =
+        APP_LSTM_PREDICTION_ENABLE != 0U &&
         state.prediction.valid != 0U &&
         (HAL_GetTick() - state.prediction.tick_ms) <=
             ENERGY_UI_PREDICTION_VALID_MS ? 1U : 0U;

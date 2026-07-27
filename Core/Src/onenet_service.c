@@ -1,6 +1,7 @@
 #include "onenet_service.h"
 
 #include "app_clock.h"
+#include "app_config.h"
 #include "app_health.h"
 #include "app_state.h"
 #include "can_app.h"
@@ -14,13 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#ifndef ONENET_TASK_LOG
-#ifdef NDEBUG
-#define ONENET_TASK_LOG 0U
-#else
-#define ONENET_TASK_LOG 1U
-#endif
-#endif
+#define ONENET_TASK_LOG APP_COMM_SERIAL_LOG_ENABLE
 
 #define ONENET_FULL_UPLOAD_MS              10000U
 #define ONENET_SWITCH_SYNC_MS                500U
@@ -189,6 +184,7 @@ static void OneNET_EnterReconnect(OneNET_Runtime_t *runtime,
 
     OneNET_Runtime_ScheduleReconnect(runtime, now, reason);
     (void)AppState_SetOneNETOnline(0U);
+    AppHealth_SetLinkOnline(APP_HEALTH_LINK_ONENET_MQTT, 0U);
     (void)ESP8266_ONENET_AT_SendCmd(ESP8266_AT_CMD_CLOSE,
                                     ESP8266_AT_RSP_OK, 1000U);
     if (ONENET_TASK_LOG)
@@ -223,6 +219,7 @@ void OneNET_ServiceTask(void const *argument)
     uint8_t sntp_attempted = 0U;
 
     (void)argument;
+    AppHealth_RegisterLink(APP_HEALTH_LINK_ONENET_MQTT, 30000U);
     if (ONENET_TASK_LOG)
     {
         printf("ONENET: wait module startup %ums\r\n",
@@ -240,6 +237,7 @@ void OneNET_ServiceTask(void const *argument)
         if (!OneNET_Runtime_IsOnline(&runtime))
         {
             (void)AppState_SetOneNETOnline(0U);
+            AppHealth_SetLinkOnline(APP_HEALTH_LINK_ONENET_MQTT, 0U);
             if (!OneNET_Runtime_CanConnect(&runtime, HAL_GetTick()))
             {
                 osDelay(ONENET_TASK_LOOP_MS);
@@ -293,6 +291,7 @@ void OneNET_ServiceTask(void const *argument)
 
             OneNET_Runtime_MarkOnline(&runtime, HAL_GetTick());
             (void)AppState_SetOneNETOnline(1U);
+            AppHealth_SetLinkOnline(APP_HEALTH_LINK_ONENET_MQTT, 1U);
             last_upload_tick = 0U;
             last_switch_sync_tick = 0U;
             last_switch_heartbeat_tick = 0U;

@@ -1,6 +1,7 @@
 #include "app_tasks.h"
 
 #include "adc.h"
+#include "app_config.h"
 #include "app_health.h"
 #include "app_state.h"
 #include "can_app.h"
@@ -18,9 +19,6 @@
 #include <stdio.h>
 
 #define APP_TASK_VERBOSE_LOG              0U
-#define APP_TASK_DATA_LOG                 1U
-#define APP_TASK_DATA_LOG_PERIOD_MS   10000U
-#define APP_TASK_DATA_SCENE_ID            0U
 #define APP_TASK_PREDICTION_VALID_MS 180000U
 #define APP_TASK_HOME_AVERAGE_COUNT        8U
 #define APP_TASK_POWER_AVERAGE_COUNT       8U
@@ -203,8 +201,10 @@ void EnergyControlTask(void const *argument)
     uint8_t load_sample_index = 0U;
     uint8_t load_sample_count = 0U;
     uint8_t load_read_divider = 0U;
-    uint32_t data_log_tick = 0U;
+#if APP_DATA_LOG_ENABLE
+    uint32_t data_log_tick;
     uint8_t data_header_printed = 0U;
+#endif
 
     (void)argument;
     INA226_PV_Init();
@@ -213,6 +213,9 @@ void EnergyControlTask(void const *argument)
     {
         Error_Handler();
     }
+#if APP_DATA_LOG_ENABLE
+    data_log_tick = HAL_GetTick();
+#endif
 
     for (;;)
     {
@@ -313,9 +316,12 @@ void EnergyControlTask(void const *argument)
             service_input.clock_second = state.beijing_clock.second;
             service_input.clock_tick_ms = state.beijing_clock.tick_ms;
             service_input.prediction = state.prediction;
+#if !APP_LSTM_PREDICTION_ENABLE
+            service_input.prediction.valid = 0U;
+#endif
             EnergyService_Process(&service_input);
 
-#if APP_TASK_DATA_LOG
+#if APP_DATA_LOG_ENABLE
             if (data_header_printed == 0U)
             {
                 data_header_printed = 1U;
@@ -327,14 +333,15 @@ void EnergyControlTask(void const *argument)
                        "ai_home_soc,ai_raw_home_soc\r\n");
             }
 
-            if ((HAL_GetTick() - data_log_tick) >=
-                APP_TASK_DATA_LOG_PERIOD_MS)
+            if ((HAL_GetTick() - data_log_tick) >= APP_DATA_LOG_PERIOD_MS)
             {
                 uint8_t prediction_fresh;
+                uint32_t data_sample_tick = HAL_GetTick();
 
-                data_log_tick = HAL_GetTick();
+                data_log_tick += APP_DATA_LOG_PERIOD_MS;
                 EnergyService_GetOutputState(&outputs);
                 prediction_fresh =
+                    APP_LSTM_PREDICTION_ENABLE != 0U &&
                     state.prediction.valid != 0U &&
                     (HAL_GetTick() - state.prediction.tick_ms) <=
                         APP_TASK_PREDICTION_VALID_MS ? 1U : 0U;
@@ -342,8 +349,8 @@ void EnergyControlTask(void const *argument)
                        "%.3f,%.3f,%.1f,%u,%.3f,%.3f,%.3f,%u,%u,%.3f,"
                        "%.1f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,"
                        "%.3f,%.3f,%.1f,%.1f\r\n",
-                       (unsigned long)data_log_tick,
-                       APP_TASK_DATA_SCENE_ID,
+                       (unsigned long)data_sample_tick,
+                       APP_DATA_SCENE_ID,
                        (double)state.sensor.lux,
                        state.sensor.pv_ok,
                        (double)state.sensor.pv_voltage,

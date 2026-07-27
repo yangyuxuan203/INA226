@@ -20,6 +20,13 @@ typedef enum
 
 typedef enum
 {
+    APP_HEALTH_LINK_ESP32_UDP = 0,
+    APP_HEALTH_LINK_ONENET_MQTT,
+    APP_HEALTH_LINK_COUNT
+} AppHealthLinkId_t;
+
+typedef enum
+{
     APP_HEALTH_FAULT_NONE = 0U,
     APP_HEALTH_FAULT_MALLOC = (1UL << 0),
     APP_HEALTH_FAULT_STACK_OVERFLOW = (1UL << 1)
@@ -30,7 +37,8 @@ typedef enum
     APP_HEALTH_WARNING_NONE = 0U,
     APP_HEALTH_WARNING_TASK_STALE = (1UL << 0),
     APP_HEALTH_WARNING_LOW_HEAP = (1UL << 1),
-    APP_HEALTH_WARNING_LOW_STACK = (1UL << 2)
+    APP_HEALTH_WARNING_LOW_STACK = (1UL << 2),
+    APP_HEALTH_WARNING_LINK_OFFLINE = (1UL << 3)
 } AppHealthWarning_t;
 
 typedef struct
@@ -39,6 +47,9 @@ typedef struct
     uint32_t reset_flags;
     uint32_t registered_mask;
     uint32_t stale_mask;
+    uint32_t link_registered_mask;
+    uint32_t link_online_mask;
+    uint32_t link_offline_mask;
     uint32_t warning_flags;
     uint32_t fault_flags;
     uint32_t free_heap_bytes;
@@ -50,6 +61,8 @@ void AppHealth_Init(void);
 void AppHealth_RegisterTask(AppHealthTaskId_t id, TaskHandle_t handle,
                             uint32_t timeout_ms);
 void AppHealth_Heartbeat(AppHealthTaskId_t id);
+void AppHealth_RegisterLink(AppHealthLinkId_t id, uint32_t startup_grace_ms);
+void AppHealth_SetLinkOnline(AppHealthLinkId_t id, uint8_t online);
 void AppHealth_ReportFault(AppHealthFault_t fault);
 uint8_t AppHealth_GetSnapshot(AppHealthSnapshot_t *snapshot);
 void AppHealth_Task(void const *argument);

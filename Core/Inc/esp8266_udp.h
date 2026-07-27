@@ -24,6 +24,8 @@ uint8_t ESP8266_UDP_PollReceiveEx(ESP32S3_Data_t *data,
 uint8_t ESP8266_UDP_SendTelemetry(float lux, float home_load_power_w, float pv_power_w);
 uint8_t ESP8266_UDP_SendLstmInput(const EnergyLstmInput_t *input);
 uint8_t ESP8266_UDP_HasPeer(void);
+uint8_t ESP8266_UDP_IsPeerAlive(uint32_t timeout_ms);
+void ESP8266_UDP_ClearPeer(void);
 
 #ifdef __cplusplus
 }

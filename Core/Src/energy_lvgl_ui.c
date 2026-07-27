@@ -1,5 +1,6 @@
 #include "energy_lvgl_ui.h"
 
+#include "app_config.h"
 #include "app_health.h"
 #include "lv_port_energy.h"
 #include "main.h"
@@ -577,7 +578,8 @@ void EnergyLvgl_Task(void const *argument)
 
     lv_init();
     EnergyLvgl_PortInit();
-    ota_timer = lv_timer_create(ota_done_cb, 1400, NULL);
+    ota_timer = lv_timer_create(ota_done_cb,
+                                APP_UI_OTA_PAGE_DURATION_MS, NULL);
     s_update_timer = lv_timer_create(update_timer_cb, 1000, NULL);
     if (ota_timer == NULL || s_update_timer == NULL)
     {
@@ -585,6 +587,9 @@ void EnergyLvgl_Task(void const *argument)
         NVIC_SystemReset();
     }
     show_ota_page();
+    lv_refr_now(NULL);
+    AppHealth_Heartbeat(APP_HEALTH_TASK_UI);
+    EnergyLvgl_TouchInit();
 
     for (;;)
     {

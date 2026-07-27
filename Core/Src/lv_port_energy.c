@@ -10,6 +10,7 @@
 static lv_disp_draw_buf_t s_draw_buf;
 static lv_color_t s_buf1[800U * ENERGY_LVGL_BUF_LINES];
 static lv_color_t s_buf2[800U * ENERGY_LVGL_BUF_LINES];
+static lv_indev_drv_t s_indev_drv;
 
 static void EnergyLvgl_Flush(lv_disp_drv_t *disp_drv,
                              const lv_area_t *area,
@@ -73,10 +74,8 @@ static void EnergyLvgl_TouchRead(lv_indev_drv_t *indev_drv,
 void EnergyLvgl_PortInit(void)
 {
     static lv_disp_drv_t disp_drv;
-    static lv_indev_drv_t indev_drv;
 
     lcd_display_dir(0);
-    (void)tp_init();
 
     lv_disp_draw_buf_init(&s_draw_buf, s_buf1, s_buf2,
                           lcddev.width * ENERGY_LVGL_BUF_LINES);
@@ -87,9 +86,13 @@ void EnergyLvgl_PortInit(void)
     disp_drv.flush_cb = EnergyLvgl_Flush;
     disp_drv.draw_buf = &s_draw_buf;
     lv_disp_drv_register(&disp_drv);
+}
 
-    lv_indev_drv_init(&indev_drv);
-    indev_drv.type = LV_INDEV_TYPE_POINTER;
-    indev_drv.read_cb = EnergyLvgl_TouchRead;
-    lv_indev_drv_register(&indev_drv);
+void EnergyLvgl_TouchInit(void)
+{
+    (void)tp_init();
+    lv_indev_drv_init(&s_indev_drv);
+    s_indev_drv.type = LV_INDEV_TYPE_POINTER;
+    s_indev_drv.read_cb = EnergyLvgl_TouchRead;
+    lv_indev_drv_register(&s_indev_drv);
 }

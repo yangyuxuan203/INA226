@@ -1,4 +1,5 @@
 #include "esp8266_udp.h"
+#include "app_config.h"
 #include "esp8266_at.h"
 #include "cJSON.h"
 #include "FreeRTOS.h"
@@ -10,6 +11,7 @@
 static uint8_t g_cjson_hooks_ready = 0;
 static char g_esp32s3_ip[32] = {0};
 static uint16_t g_esp32s3_src_port = 0;
+static uint32_t g_esp32s3_last_rx_tick = 0U;
 
 static void *ESP8266_JSON_Malloc(size_t size)
 {
@@ -73,6 +75,7 @@ uint8_t ESP8266_UDP_Init(void)
     char ip_rsp[256];
 
     ESP8266_JSON_InitHooks();
+    ESP8266_UDP_ClearPeer();
 
     if (ESP8266_UDP_VERBOSE_LOG) printf("ESP8266: start DMA\r\n");
     if (ESP8266_AT_StartDma() != 0)
@@ -169,6 +172,7 @@ uint8_t ESP8266_UDP_PollReceiveEx(ESP32S3_Data_t *data,
 
     if (g_esp32s3_ip[0] != '\0')
     {
+        g_esp32s3_last_rx_tick = HAL_GetTick();
         if (ESP8266_UDP_VERBOSE_LOG) printf("ESP8266: peer %s:%u\r\n", g_esp32s3_ip, g_esp32s3_src_port);
     }
     if (ESP8266_UDP_VERBOSE_LOG) printf("UDP RX: %s\r\n", payload);
@@ -325,6 +329,8 @@ uint8_t ESP8266_UDP_SendLstmInput(const EnergyLstmInput_t *input)
     }
 
     cJSON_AddStringToObject(root, "type", "lstm_input");
+    cJSON_AddBoolToObject(root, "prediction_enable",
+                          APP_LSTM_PREDICTION_ENABLE != 0U);
     cJSON_AddNumberToObject(root, "real_hour_sin", input->real_hour_sin);
     cJSON_AddNumberToObject(root, "real_hour_cos", input->real_hour_cos);
     cJSON_AddNumberToObject(root, "lux", input->lux);
@@ -375,4 +381,22 @@ uint8_t ESP8266_UDP_SendLstmInput(const EnergyLstmInput_t *input)
 uint8_t ESP8266_UDP_HasPeer(void)
 {
     return g_esp32s3_ip[0] != '\0';
+}
+
+uint8_t ESP8266_UDP_IsPeerAlive(uint32_t timeout_ms)
+{
+    if (timeout_ms == 0U || ESP8266_UDP_HasPeer() == 0U)
+    {
+        return 0U;
+    }
+
+    return ((HAL_GetTick() - g_esp32s3_last_rx_tick) <= timeout_ms) ?
+           1U : 0U;
+}
+
+void ESP8266_UDP_ClearPeer(void)
+{
+    g_esp32s3_ip[0] = '\0';
+    g_esp32s3_src_port = 0U;
+    g_esp32s3_last_rx_tick = 0U;
 }

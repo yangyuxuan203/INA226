@@ -1,5 +1,6 @@
 #include "energy_service.h"
 
+#include "app_config.h"
 #include "energy_io.h"
 #include "FreeRTOS.h"
 #include "queue.h"
@@ -44,7 +45,7 @@
 #define PV_PROBE_SETTLE_MS      5000U
 #define PV_ACTIVE_STABILIZE_MS  2000U
 
-#define ENERGY_LSTM_DISPATCH_ENABLE 1U
+#define ENERGY_LSTM_DISPATCH_ENABLE APP_LSTM_PREDICTION_ENABLE
 #define ENERGY_LSTM_SOC_MAX_DROP_PCT 3.0f
 #define ENERGY_LSTM_SOC_MAX_RISE_PCT 3.0f
 #define ENERGY_LSTM_PRED_VALID_MS 180000U
