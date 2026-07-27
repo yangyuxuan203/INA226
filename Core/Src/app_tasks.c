@@ -19,7 +19,6 @@
 #include <stdio.h>
 
 #define APP_TASK_VERBOSE_LOG              0U
-#define APP_TASK_PREDICTION_VALID_MS 180000U
 #define APP_TASK_HOME_AVERAGE_COUNT        8U
 #define APP_TASK_POWER_AVERAGE_COUNT       8U
 
@@ -38,7 +37,6 @@ static float AppTasks_Average(const float *values, uint8_t count)
 void HomeSensorTask(void const *argument)
 {
     INA226_Data measurement;
-    SocEstimator_t soc_estimator;
     float voltage_samples[APP_TASK_HOME_AVERAGE_COUNT] = {0.0f};
     float current_samples[APP_TASK_HOME_AVERAGE_COUNT] = {0.0f};
     float power_samples[APP_TASK_HOME_AVERAGE_COUNT] = {0.0f};
@@ -47,7 +45,6 @@ void HomeSensorTask(void const *argument)
     uint8_t initial_samples_to_skip = 3U;
 
     (void)argument;
-    SocEstimator_Init(&soc_estimator);
     osDelay(500U);
     INA226_Init();
 
@@ -83,10 +80,7 @@ void HomeSensorTask(void const *argument)
             average_current = AppTasks_Average(current_samples,
                                                 sample_count);
             average_power = AppTasks_Average(power_samples, sample_count);
-            soc = SocEstimator_Update(&soc_estimator,
-                                      average_voltage,
-                                      average_current,
-                                      200U);
+            soc = SocEstimator_FromVoltage(average_voltage);
 
             (void)AppState_UpdateHome(average_voltage,
                                       measurement.shunt_voltage,
@@ -186,7 +180,6 @@ void EnergyControlTask(void const *argument)
     CAN_BatteryData_t vehicle;
     AppStateSnapshot_t state;
     EnergyServiceInput_t service_input;
-    EnergyOutputState_t outputs;
     INA226_Data pv_measurement;
     INA226_Data load_measurement;
     float pv_voltage_samples[APP_TASK_POWER_AVERAGE_COUNT] = {0.0f};
@@ -325,73 +318,40 @@ void EnergyControlTask(void const *argument)
             if (data_header_printed == 0U)
             {
                 data_header_printed = 1U;
-                printf("DATA,tick_ms,scene,lux,pv_ok,pv_v,pv_i,pv_p,"
-                       "home_ok,home_v,home_i,home_p,home_soc,load_ok,"
-                       "load_v,load_i,load_p,car_soc,s3_valid,s3_v,s3_soc,"
-                       "s3_hr,s3_spo2,s3_state,pvsrc,hsrc,rigid,led,fan,"
-                       "qi,hchg,cchg,v2h,ai_valid,ai_pv_p,ai_load_p,"
-                       "ai_home_soc,ai_raw_home_soc\r\n");
+                printf("DATA,period_ms,real_hour_sin,real_hour_cos,lux,"
+                       "pv_v,pv_p,"
+                       "home_v,home_soc,load_p,car_soc,human_soc,pvsrc,"
+                       "hsrc,rigid,led,fan,qi,hchg,cchg,v2h\r\n");
             }
 
             if ((HAL_GetTick() - data_log_tick) >= APP_DATA_LOG_PERIOD_MS)
             {
-                uint8_t prediction_fresh;
-                uint32_t data_sample_tick = HAL_GetTick();
+                EnergyLstmInput_t data_input;
 
                 data_log_tick += APP_DATA_LOG_PERIOD_MS;
-                EnergyService_GetOutputState(&outputs);
-                prediction_fresh =
-                    APP_LSTM_PREDICTION_ENABLE != 0U &&
-                    state.prediction.valid != 0U &&
-                    (HAL_GetTick() - state.prediction.tick_ms) <=
-                        APP_TASK_PREDICTION_VALID_MS ? 1U : 0U;
-                printf("DATA,%lu,%u,%.1f,%u,%.3f,%.3f,%.3f,%u,%.3f,"
-                       "%.3f,%.3f,%.1f,%u,%.3f,%.3f,%.3f,%u,%u,%.3f,"
-                       "%.1f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,"
-                       "%.3f,%.3f,%.1f,%.1f\r\n",
-                       (unsigned long)data_sample_tick,
-                       APP_DATA_SCENE_ID,
-                       (double)state.sensor.lux,
-                       state.sensor.pv_ok,
-                       (double)state.sensor.pv_voltage,
-                       (double)state.sensor.pv_current,
-                       (double)state.sensor.pv_power,
-                       state.sensor.ina226_ok,
-                       (double)state.sensor.bus_voltage,
-                       (double)state.sensor.current,
-                       (double)state.sensor.power,
-                       (double)state.sensor.soc_pct,
-                       state.sensor.ina3_ok,
-                       (double)state.sensor.ina3_voltage,
-                       (double)state.sensor.ina3_current,
-                       (double)state.sensor.ina3_power,
-                       vehicle.soc_pct,
-                       state.wearable.valid,
-                       (double)(state.wearable.valid ?
-                           state.wearable.bat_v : -1.0f),
-                       (double)(state.wearable.valid ?
-                           state.wearable.bat_pct : -1.0f),
-                       state.wearable.valid ? state.wearable.hr : 0U,
-                       state.wearable.valid ? state.wearable.spo2 : 0U,
-                       state.wearable.valid ? state.wearable.state : 0U,
-                       outputs.pv_source,
-                       outputs.home_source,
-                       outputs.rigid,
-                       outputs.led,
-                       outputs.fan,
-                       outputs.qi,
-                       outputs.home_charge,
-                       outputs.car_charge,
-                       outputs.v2h,
-                       prediction_fresh,
-                       (double)(prediction_fresh ?
-                           state.prediction.future_pv_p : -1.0f),
-                       (double)(prediction_fresh ?
-                           state.prediction.future_load_p : -1.0f),
-                       (double)(prediction_fresh ?
-                           state.prediction.future_home_soc : -1.0f),
-                       (double)(prediction_fresh ?
-                           state.prediction_raw_home_soc : -1.0f));
+                EnergyService_BuildLstmInput(&data_input, &service_input);
+                printf("DATA,%lu,%.6f,%.6f,%.1f,%.3f,%.3f,%.3f,%.1f,%.3f,"
+                       "%.1f,%.1f,%u,%u,%u,%u,%u,%u,%u,%u,%u\r\n",
+                       (unsigned long)APP_DATA_LOG_PERIOD_MS,
+                       (double)data_input.real_hour_sin,
+                       (double)data_input.real_hour_cos,
+                       (double)data_input.lux,
+                       (double)data_input.pv_v,
+                       (double)data_input.pv_p,
+                       (double)data_input.home_v,
+                       (double)data_input.home_soc,
+                       (double)data_input.load_p,
+                       (double)data_input.car_soc,
+                       (double)data_input.human_soc,
+                       data_input.pvsrc,
+                       data_input.hsrc,
+                       data_input.rigid,
+                       data_input.led,
+                       data_input.fan,
+                       data_input.qi,
+                       data_input.hchg,
+                       data_input.cchg,
+                       data_input.v2h);
             }
 #endif
         }

@@ -5,20 +5,7 @@
 extern "C" {
 #endif
 
-#include <stdint.h>
-
-typedef struct
-{
-    float coulomb_mah;
-    float last_cal_voltage;
-    uint8_t initialized;
-} SocEstimator_t;
-
-void SocEstimator_Init(SocEstimator_t *estimator);
-float SocEstimator_Update(SocEstimator_t *estimator,
-                          float voltage_v,
-                          float current_a,
-                          uint32_t interval_ms);
+float SocEstimator_FromVoltage(float voltage_v);
 
 #ifdef __cplusplus
 }
