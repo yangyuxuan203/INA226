@@ -39,6 +39,8 @@ static uint8_t ESP32_ServiceBuildEnergyInput(EnergyServiceInput_t *input,
     input->car_battery_voltage_v = vehicle.voltage;
     input->home_soc = state->sensor.soc_pct;
     input->car_soc = vehicle.soc_pct;
+    input->car_discharging =
+        vehicle.status == BAT_STATUS_DISCHARGE ? 1U : 0U;
     input->human_soc = state->wearable.valid ?
         state->wearable.bat_pct : -1.0f;
     input->lux = state->sensor.lux;

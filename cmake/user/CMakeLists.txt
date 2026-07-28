@@ -44,6 +44,7 @@ set(User_Sources
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/app_tasks.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/soc_estimator.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/energy_io.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/energy_optimizer.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/energy_service.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/energy_ui_model.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/ina226_pv.c

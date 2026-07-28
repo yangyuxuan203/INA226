@@ -79,6 +79,7 @@ typedef struct
     float car_battery_voltage_v;
     float home_soc;
     float car_soc;
+    uint8_t car_discharging;
     float human_soc;
     float lux;
     uint8_t sensor_ok;

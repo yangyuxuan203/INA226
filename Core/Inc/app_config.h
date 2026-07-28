@@ -5,8 +5,23 @@
 #define APP_LSTM_PREDICTION_ENABLE       1U
 #define APP_LSTM_DISPATCH_ENABLE         0U
 #define APP_LSTM_PREDICTION_LOG_ENABLE   1U
+#define APP_OPTIMIZER_ENABLE             1U
+#define APP_OPTIMIZER_DISPATCH_ENABLE    1U
+#define APP_OPTIMIZER_LOG_ENABLE         1U
 #define APP_HEALTH_SERIAL_LOG_ENABLE     0U
 #define APP_COMM_SERIAL_LOG_ENABLE       0U
+
+/* Normalized objective weights; keep the sum equal to 1.0. */
+#define APP_OPTIMIZER_WEIGHT_PV          0.20f
+#define APP_OPTIMIZER_WEIGHT_BATTERY     0.25f
+#define APP_OPTIMIZER_WEIGHT_LOAD        0.30f
+#define APP_OPTIMIZER_WEIGHT_CAR         0.15f
+#define APP_OPTIMIZER_WEIGHT_SWITCH      0.10f
+
+/* Forecast trust follows the latest model's relative validation error. */
+#define APP_OPTIMIZER_LSTM_PV_TRUST      0.90f
+#define APP_OPTIMIZER_LSTM_LOAD_TRUST    0.70f
+#define APP_OPTIMIZER_LSTM_SOC_TRUST     0.40f
 
 /* ESP32 state upload stays active even when prediction is disabled. */
 #define APP_LSTM_INPUT_SCHEMA_VERSION    1U
@@ -42,6 +57,18 @@
 
 #if (APP_UI_OTA_PAGE_DURATION_MS == 0U)
 #error "APP_UI_OTA_PAGE_DURATION_MS must be greater than zero"
+#endif
+
+#if APP_OPTIMIZER_DISPATCH_ENABLE && !APP_OPTIMIZER_ENABLE
+#error "APP_OPTIMIZER_DISPATCH_ENABLE requires APP_OPTIMIZER_ENABLE"
+#endif
+
+#if APP_OPTIMIZER_ENABLE && !APP_LSTM_PREDICTION_ENABLE
+#error "APP_OPTIMIZER_ENABLE requires APP_LSTM_PREDICTION_ENABLE"
+#endif
+
+#if APP_OPTIMIZER_ENABLE && APP_LSTM_DISPATCH_ENABLE
+#error "The legacy LSTM threshold dispatcher conflicts with the optimizer"
 #endif
 
 #endif /* APP_CONFIG_H */

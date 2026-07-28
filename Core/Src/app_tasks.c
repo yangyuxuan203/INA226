@@ -205,6 +205,9 @@ void EnergyControlTask(void const *argument)
     uint32_t data_log_tick;
     uint8_t data_header_printed = 0U;
 #endif
+#if APP_OPTIMIZER_LOG_ENABLE
+    uint32_t optimizer_log_sequence = 0U;
+#endif
 
     (void)argument;
     INA226_PV_Init();
@@ -303,6 +306,8 @@ void EnergyControlTask(void const *argument)
             service_input.car_battery_voltage_v = vehicle.voltage;
             service_input.home_soc = state.sensor.soc_pct;
             service_input.car_soc = vehicle.soc_pct;
+            service_input.car_discharging =
+                vehicle.status == BAT_STATUS_DISCHARGE ? 1U : 0U;
             service_input.human_soc = state.wearable.valid ?
                 state.wearable.bat_pct : -1.0f;
             service_input.lux = state.sensor.lux;
@@ -321,6 +326,32 @@ void EnergyControlTask(void const *argument)
             service_input.prediction.valid = 0U;
 #endif
             EnergyService_Process(&service_input);
+
+#if APP_OPTIMIZER_LOG_ENABLE
+            {
+                EnergyOptimizerDecision_t optimizer_decision;
+
+                if (EnergyService_GetOptimizerDecision(
+                        &optimizer_decision) == 0U &&
+                    optimizer_decision.sequence !=
+                        optimizer_log_sequence)
+                {
+                    optimizer_log_sequence = optimizer_decision.sequence;
+                    printf("OPT,%lu,%lu,%u,%u,%.4f,%.4f,%.4f,%.4f,%.4f,"
+                           "%.4f\r\n",
+                           (unsigned long)g_data_elapsed_ms,
+                           (unsigned long)optimizer_decision.sequence,
+                           optimizer_decision.prediction_used,
+                           (unsigned int)optimizer_decision.mode,
+                           (double)optimizer_decision.total_score,
+                           (double)optimizer_decision.pv_waste_score,
+                           (double)optimizer_decision.battery_stress_score,
+                           (double)optimizer_decision.load_loss_score,
+                           (double)optimizer_decision.car_deficit_score,
+                           (double)optimizer_decision.switch_score);
+                }
+            }
+#endif
 
 #if APP_DATA_LOG_ENABLE
             if (data_header_printed == 0U)

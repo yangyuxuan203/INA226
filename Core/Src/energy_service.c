@@ -2,6 +2,7 @@
 
 #include "app_config.h"
 #include "energy_io.h"
+#include "energy_optimizer.h"
 #include "FreeRTOS.h"
 #include "queue.h"
 #include "main.h"
@@ -46,29 +47,17 @@
 #define PV_PROBE_CHARGE_MS      10000U
 #define PV_PROBE_SETTLE_MS      5000U
 #define PV_ACTIVE_STABILIZE_MS  2000U
+#define CHARGE_DROP_CONFIRM_MS  3000U
+#define CHARGE_RESTART_HOLD_MS 10000U
+#define CHARGE_START_CONFIRM_MS 2000U
+#define CAR_SOC_JUMP_REJECT_PCT     3.0f
+#define CAR_SOC_JUMP_CONFIRM_MS  5000U
+#define CHARGE_SOC_RESTART_CONFIRM_MS 10000U
 
-#define ENERGY_LSTM_DISPATCH_ENABLE APP_LSTM_DISPATCH_ENABLE
 #define ENERGY_LSTM_SOC_MAX_DROP_PCT 3.0f
 #define ENERGY_LSTM_SOC_MAX_RISE_PCT 3.0f
-#define ENERGY_LSTM_PRED_VALID_MS 180000U
-#define ENERGY_LSTM_SOC_FALL_WARN_PCT 2.0f
-#define ENERGY_LSTM_HOME_CHARGE_MIN_SURPLUS_W 0.30f
-#define ENERGY_LSTM_CAR_CHARGE_MIN_SURPLUS_W 1.00f
-#define ENERGY_LSTM_CAR_MIN_FUTURE_HOME_SOC 88.0f
+#define ENERGY_OPTIMIZER_DECISION_VALID_MS 180000U
 #define ENERGY_PI_F 3.14159265358979323846f
-
-typedef struct
-{
-    uint8_t valid;
-    uint8_t pv_risk;
-    uint8_t home_soc_risk;
-    uint8_t force_save_mode;
-    uint8_t allow_new_charge_probe;
-    uint8_t allow_home_charge;
-    uint8_t allow_car_charge;
-    float future_surplus_w;
-    float future_soc_delta_pct;
-} EnergyPredictPolicy_t;
 
 typedef enum
 {
@@ -128,6 +117,23 @@ typedef struct
     ChargeFsmState_t charge_state;
     uint8_t car_charge_reported;
     uint32_t car_charge_report_tick;
+    uint8_t charge_start_candidate;
+    uint8_t charge_drop_pending;
+    uint32_t charge_start_candidate_tick;
+    uint32_t charge_drop_tick;
+    uint32_t charge_last_off_tick;
+    float car_soc_control;
+    float car_soc_candidate;
+    uint32_t car_soc_candidate_tick;
+    uint8_t car_soc_control_valid;
+    uint8_t car_soc_candidate_valid;
+    uint8_t car_soc_restart_pending;
+    uint32_t car_soc_restart_tick;
+    EnergyOptimizerDecision_t optimizer_decision;
+    uint32_t optimizer_last_prediction_tick;
+    uint32_t optimizer_sequence;
+    uint8_t optimizer_has_prediction;
+    uint8_t optimizer_fsm_target;
     KeyDebounce_t led_key_fsm;
     KeyDebounce_t fan_key_fsm;
     KeyDebounce_t qi_key_fsm;
@@ -232,65 +238,103 @@ static uint8_t Energy_GetPressedEvent(KeyDebounce_t *key,
     return event;
 }
 
-static EnergyPredictPolicy_t Energy_OptimizeDispatchByPrediction(
-    const EnergyLstmPrediction_t *prediction,
-    uint32_t now_tick,
-    float home_soc,
-    uint8_t pv_available,
-    uint8_t pv_charging_active)
+static float Energy_UpdateCarSocControl(const EnergyServiceInput_t *input,
+                                        uint32_t now_tick)
 {
-    EnergyPredictPolicy_t policy;
+    float raw_soc;
 
-    memset(&policy, 0, sizeof(policy));
-    policy.allow_new_charge_probe = 1U;
-    policy.allow_home_charge = 1U;
-    policy.allow_car_charge = 1U;
-
-    if (!ENERGY_LSTM_DISPATCH_ENABLE ||
-        prediction == NULL ||
-        !prediction->valid ||
-        (now_tick - prediction->tick_ms) > ENERGY_LSTM_PRED_VALID_MS)
+    if (!isfinite(input->car_soc))
     {
-        return policy;
+        return g_energy.car_soc_control_valid ?
+            g_energy.car_soc_control : 0.0f;
     }
 
-    policy.valid = 1U;
-    policy.future_surplus_w =
-        prediction->future_pv_p - prediction->future_load_p;
-    policy.future_soc_delta_pct =
-        prediction->future_home_soc - home_soc;
-
-    if (policy.future_surplus_w < ENERGY_LSTM_HOME_CHARGE_MIN_SURPLUS_W)
+    if (input->car_battery_voltage_v <= 1.0f)
     {
-        policy.pv_risk = 1U;
-        policy.allow_new_charge_probe = 0U;
-        policy.allow_home_charge = pv_charging_active ? 1U : 0U;
+        g_energy.car_soc_control_valid = 0U;
+        g_energy.car_soc_candidate_valid = 0U;
+        return 0.0f;
     }
 
-    if (policy.future_soc_delta_pct < -ENERGY_LSTM_SOC_FALL_WARN_PCT)
+    raw_soc = Energy_ClampFloat(input->car_soc, 0.0f, 100.0f);
+    if (!g_energy.car_soc_control_valid)
     {
-        policy.home_soc_risk = 1U;
+        g_energy.car_soc_control = raw_soc;
+        g_energy.car_soc_control_valid = 1U;
+        return raw_soc;
     }
 
-    if (policy.home_soc_risk ||
-        policy.future_surplus_w < ENERGY_LSTM_CAR_CHARGE_MIN_SURPLUS_W ||
-        prediction->future_home_soc < ENERGY_LSTM_CAR_MIN_FUTURE_HOME_SOC)
+    /* A full indication must stop charging immediately. Downward voltage-SOC
+       steps are qualified because removing charge voltage can cause a large
+       apparent SOC drop without real battery discharge. */
+    if (raw_soc >= CAR_SOC_CHARGE_STOP_PCT)
     {
-        policy.allow_car_charge = 0U;
+        g_energy.car_soc_control = raw_soc;
+        g_energy.car_soc_candidate_valid = 0U;
+        return g_energy.car_soc_control;
     }
 
-    if (policy.home_soc_risk && !pv_available)
+    if (fabsf(raw_soc - g_energy.car_soc_control) <=
+        CAR_SOC_JUMP_REJECT_PCT)
     {
-        policy.force_save_mode = 1U;
+        g_energy.car_soc_control = raw_soc;
+        g_energy.car_soc_candidate_valid = 0U;
+        return g_energy.car_soc_control;
     }
 
-    return policy;
+    if (!g_energy.car_soc_candidate_valid ||
+        fabsf(raw_soc - g_energy.car_soc_candidate) >
+            CAR_SOC_JUMP_REJECT_PCT)
+    {
+        g_energy.car_soc_candidate = raw_soc;
+        g_energy.car_soc_candidate_tick = now_tick;
+        g_energy.car_soc_candidate_valid = 1U;
+    }
+    else if ((now_tick - g_energy.car_soc_candidate_tick) >=
+             CAR_SOC_JUMP_CONFIRM_MS)
+    {
+        g_energy.car_soc_control = raw_soc;
+        g_energy.car_soc_candidate_valid = 0U;
+    }
+
+    return g_energy.car_soc_control;
 }
 
-static void Energy_UpdateChargeState(const EnergyServiceInput_t *input)
+static uint8_t Energy_ConditionHeld(uint8_t condition,
+                                    uint8_t *pending,
+                                    uint32_t *start_tick,
+                                    uint32_t now_tick,
+                                    uint32_t confirm_ms)
+{
+    if (!condition)
+    {
+        *pending = 0U;
+        return 0U;
+    }
+
+    if (!*pending)
+    {
+        *pending = 1U;
+        *start_tick = now_tick;
+        return 0U;
+    }
+
+    return (now_tick - *start_tick) >= confirm_ms ? 1U : 0U;
+}
+
+static void Energy_UpdateChargeState(const EnergyServiceInput_t *input,
+                                     float car_soc_control,
+                                     uint32_t now_tick)
 {
     uint8_t car_available =
         input->car_battery_voltage_v > 1.0f ? 1U : 0U;
+    uint8_t car_restart_ready = Energy_ConditionHeld(
+        car_available && input->car_discharging &&
+            car_soc_control <= CAR_SOC_CHARGE_RESTART_PCT,
+        &g_energy.car_soc_restart_pending,
+        &g_energy.car_soc_restart_tick,
+        now_tick,
+        CHARGE_SOC_RESTART_CONFIRM_MS);
 
     switch (g_energy.charge_state)
     {
@@ -298,7 +342,7 @@ static void Energy_UpdateChargeState(const EnergyServiceInput_t *input)
             if (input->home_soc >= HOME_SOC_CAR_CHARGE_START_PCT)
             {
                 if (car_available &&
-                    input->car_soc < CAR_SOC_CHARGE_STOP_PCT)
+                    car_soc_control < CAR_SOC_CHARGE_STOP_PCT)
                 {
                     g_energy.charge_state = CHARGE_FSM_CAR_PRIORITY;
                 }
@@ -316,7 +360,7 @@ static void Energy_UpdateChargeState(const EnergyServiceInput_t *input)
                     input->home_soc < HOME_SOC_CAR_CHARGE_START_PCT ?
                     CHARGE_FSM_HOME_PRIORITY : CHARGE_FSM_FULL_HOLD;
             }
-            else if (input->car_soc >= CAR_SOC_CHARGE_STOP_PCT)
+            else if (car_soc_control >= CAR_SOC_CHARGE_STOP_PCT)
             {
                 g_energy.charge_state =
                     input->home_soc < HOME_SOC_CAR_CHARGE_START_PCT ?
@@ -336,7 +380,7 @@ static void Energy_UpdateChargeState(const EnergyServiceInput_t *input)
                     input->home_soc < HOME_SOC_CAR_CHARGE_START_PCT ?
                     CHARGE_FSM_HOME_PRIORITY : CHARGE_FSM_FULL_HOLD;
             }
-            else if (input->car_soc <= CAR_SOC_CHARGE_RESTART_PCT)
+            else if (car_restart_ready)
             {
                 g_energy.charge_state =
                     input->home_soc < HOME_SOC_CAR_CHARGE_START_PCT ?
@@ -354,13 +398,139 @@ static void Energy_UpdateChargeState(const EnergyServiceInput_t *input)
             {
                 g_energy.charge_state = CHARGE_FSM_HOME_PRIORITY;
             }
-            else if (car_available &&
-                     input->car_soc <= CAR_SOC_CHARGE_RESTART_PCT)
+            else if (car_restart_ready)
             {
                 g_energy.charge_state = CHARGE_FSM_CAR_PRIORITY;
             }
             break;
     }
+}
+
+static uint8_t Energy_GetChargeOutputTarget(void)
+{
+    uint8_t home_on =
+        EnergyIo_ReadOutput(ENERGY_OUTPUT_HOME_CHARGE);
+    uint8_t car_on =
+        EnergyIo_ReadOutput(ENERGY_OUTPUT_CAR_CHARGE);
+
+    if (home_on && car_on)
+    {
+        return 3U;
+    }
+    if (home_on)
+    {
+        return 1U;
+    }
+    return car_on ? 2U : 0U;
+}
+
+static void Energy_RecordChargeOff(uint32_t now_tick)
+{
+    EnergyIo_DisableChargeOutputs();
+    g_energy.charge_last_off_tick = now_tick;
+    g_energy.charge_start_candidate = 0U;
+    g_energy.charge_drop_pending = 0U;
+}
+
+static void Energy_ApplyChargeOutput(
+    uint8_t requested_target,
+    uint8_t selected_target,
+    uint8_t fsm_target,
+    const EnergyServiceInput_t *input,
+    float car_soc_control,
+    uint8_t pv_available,
+    uint32_t now_tick)
+{
+    uint8_t active_target = Energy_GetChargeOutputTarget();
+    uint8_t immediate_stop = 0U;
+    float battery_voltage_v = 0.0f;
+
+    if (active_target == 1U)
+    {
+        battery_voltage_v = input->home_battery_voltage_v;
+        immediate_stop =
+            fsm_target != 1U ||
+            input->home_soc >= HOME_SOC_CAR_CHARGE_START_PCT;
+    }
+    else if (active_target == 2U)
+    {
+        battery_voltage_v = input->car_battery_voltage_v;
+        immediate_stop =
+            fsm_target != 2U ||
+            input->car_battery_voltage_v <= 1.0f ||
+            input->car_soc >= CAR_SOC_CHARGE_STOP_PCT ||
+            car_soc_control >= CAR_SOC_CHARGE_STOP_PCT;
+    }
+    else if (active_target > 2U)
+    {
+        immediate_stop = 1U;
+    }
+
+    if (active_target != 0U &&
+        (!input->sensor_ok || !input->pv_ok || !pv_available ||
+         input->pv_voltage_v <= battery_voltage_v))
+    {
+        immediate_stop = 1U;
+    }
+
+    if (active_target != 0U)
+    {
+        g_energy.charge_start_candidate = 0U;
+        if (immediate_stop)
+        {
+            Energy_RecordChargeOff(now_tick);
+            return;
+        }
+
+        if (requested_target == active_target &&
+            selected_target == active_target)
+        {
+            g_energy.charge_drop_pending = 0U;
+            return;
+        }
+
+        if (!g_energy.charge_drop_pending)
+        {
+            g_energy.charge_drop_pending = 1U;
+            g_energy.charge_drop_tick = now_tick;
+        }
+        else if ((now_tick - g_energy.charge_drop_tick) >=
+                 CHARGE_DROP_CONFIRM_MS)
+        {
+            Energy_RecordChargeOff(now_tick);
+        }
+        return;
+    }
+
+    g_energy.charge_drop_pending = 0U;
+    if (requested_target == 0U ||
+        requested_target != selected_target ||
+        requested_target != fsm_target)
+    {
+        g_energy.charge_start_candidate = 0U;
+        return;
+    }
+
+    if (g_energy.charge_start_candidate != requested_target)
+    {
+        g_energy.charge_start_candidate = requested_target;
+        g_energy.charge_start_candidate_tick = now_tick;
+        return;
+    }
+
+    if ((now_tick - g_energy.charge_last_off_tick) <
+            CHARGE_RESTART_HOLD_MS ||
+        (now_tick - g_energy.charge_start_candidate_tick) <
+            CHARGE_START_CONFIRM_MS)
+    {
+        return;
+    }
+
+    EnergyIo_WriteOutput(ENERGY_OUTPUT_HOME_CHARGE,
+                         requested_target == 1U ? 1U : 0U);
+    EnergyIo_WriteOutput(ENERGY_OUTPUT_CAR_CHARGE,
+                         requested_target == 2U ? 1U : 0U);
+    g_energy.charge_start_candidate = 0U;
 }
 
 static void Energy_ResetContext(void)
@@ -377,6 +547,7 @@ static void Energy_ResetContext(void)
     g_energy.pending_command.load = -1;
     g_energy.pending_command.qi = -1;
     g_energy.charge_state = CHARGE_FSM_HOME_PRIORITY;
+    g_energy.charge_last_off_tick = HAL_GetTick();
     g_energy.charging_active = 1U;
 }
 
@@ -432,9 +603,15 @@ void EnergyService_Process(const EnergyServiceInput_t *input)
     uint8_t led_period;
     uint8_t led_auto_request;
     float pv_surplus_w;
+    float car_soc_control;
     uint8_t charge_target = 0U;
+    uint8_t fsm_charge_target = 0U;
+    uint8_t requested_charge_target = 0U;
     float charge_target_voltage_v = 0.0f;
-    EnergyPredictPolicy_t ai_policy;
+    EnergyOutputState_t current_output;
+    EnergyOptimizerInput_t optimizer_input;
+    EnergyServiceInput_t optimizer_energy;
+    uint8_t optimizer_active = 0U;
     uint8_t can_charge_from_pv;
     uint8_t pv_load_priority_ok;
     uint8_t pv_probe_charge = 0U;
@@ -466,6 +643,7 @@ void EnergyService_Process(const EnergyServiceInput_t *input)
             EnergyIo_SendCarV2HCommand(0U);
             g_energy.v2h_active = 0U;
         }
+        Energy_RecordChargeOff(now_tick);
         EnergyIo_DisableAllOutputs();
         g_energy.pv_state = PV_FSM_IDLE;
         g_energy.pv_bad_count = 0U;
@@ -475,6 +653,13 @@ void EnergyService_Process(const EnergyServiceInput_t *input)
         g_energy.pv_probe_start_tick = 0U;
         g_energy.pv_charging_active = 0U;
         g_energy.charge_state = CHARGE_FSM_HOME_PRIORITY;
+        g_energy.charge_last_off_tick = now_tick;
+        g_energy.car_soc_control_valid = 0U;
+        g_energy.car_soc_candidate_valid = 0U;
+        g_energy.car_soc_restart_pending = 0U;
+        memset(&g_energy.optimizer_decision, 0,
+               sizeof(g_energy.optimizer_decision));
+        g_energy.optimizer_has_prediction = 0U;
         if (g_energy.car_charge_reported)
         {
             EnergyIo_SendCarChargeCommand(0U, 0.0f);
@@ -605,18 +790,8 @@ void EnergyService_Process(const EnergyServiceInput_t *input)
     led_period = Energy_GetLedPeriod(input->clock_hour);
     pv_surplus_w = input->pv_power_w - input->home_load_power_w;
 
-    ai_policy = Energy_OptimizeDispatchByPrediction(
-        &input->prediction,
-        now_tick,
-        input->home_soc,
-        pv_available,
-        g_energy.pv_charging_active);
-    if (ai_policy.force_save_mode)
-    {
-        low_energy_mode = 1U;
-    }
-
-    Energy_UpdateChargeState(input);
+    car_soc_control = Energy_UpdateCarSocControl(input, now_tick);
+    Energy_UpdateChargeState(input, car_soc_control, now_tick);
 
     switch (g_energy.charge_state)
     {
@@ -631,7 +806,7 @@ void EnergyService_Process(const EnergyServiceInput_t *input)
 
         case CHARGE_FSM_CAR_PRIORITY:
             if (input->car_battery_voltage_v > 1.0f &&
-                input->car_soc < CAR_SOC_CHARGE_STOP_PCT)
+                car_soc_control < CAR_SOC_CHARGE_STOP_PCT)
             {
                 charge_target = 2U;
                 charge_target_voltage_v = input->car_battery_voltage_v;
@@ -642,6 +817,101 @@ void EnergyService_Process(const EnergyServiceInput_t *input)
         default:
             break;
     }
+    fsm_charge_target = charge_target;
+
+#if APP_OPTIMIZER_ENABLE
+    EnergyIo_GetOutputState(&current_output);
+    if (input->prediction.valid &&
+        (!g_energy.optimizer_has_prediction ||
+         input->prediction.tick_ms !=
+             g_energy.optimizer_last_prediction_tick))
+    {
+        memset(&optimizer_input, 0, sizeof(optimizer_input));
+        optimizer_energy = *input;
+        optimizer_energy.car_soc = car_soc_control;
+        optimizer_input.energy = &optimizer_energy;
+        optimizer_input.current_output = current_output;
+        optimizer_input.now_tick_ms = now_tick;
+        optimizer_input.pv_available = pv_available;
+        optimizer_input.v2h_active = g_energy.v2h_active;
+        optimizer_input.allowed_charge_target = fsm_charge_target;
+        optimizer_input.led_requested = current_output.led;
+        optimizer_input.fan_requested = g_energy.fan_user_req;
+        optimizer_input.qi_requested = g_energy.qi_user_req;
+
+        if (EnergyOptimizer_Evaluate(
+                &optimizer_input,
+                &g_energy.optimizer_decision) == 0U)
+        {
+            g_energy.optimizer_sequence++;
+            if (g_energy.optimizer_sequence == 0U)
+            {
+                g_energy.optimizer_sequence++;
+            }
+            g_energy.optimizer_decision.sequence =
+                g_energy.optimizer_sequence;
+        }
+        else
+        {
+            memset(&g_energy.optimizer_decision, 0,
+                   sizeof(g_energy.optimizer_decision));
+        }
+        g_energy.optimizer_last_prediction_tick =
+            input->prediction.tick_ms;
+        g_energy.optimizer_fsm_target = fsm_charge_target;
+        g_energy.optimizer_has_prediction = 1U;
+    }
+
+    if (g_energy.optimizer_decision.valid &&
+        g_energy.optimizer_fsm_target == fsm_charge_target &&
+        (now_tick - g_energy.optimizer_decision.prediction_tick_ms) <=
+            ENERGY_OPTIMIZER_DECISION_VALID_MS)
+    {
+        optimizer_active = 1U;
+    }
+    else
+    {
+        g_energy.optimizer_decision.valid = 0U;
+    }
+
+#if APP_OPTIMIZER_DISPATCH_ENABLE
+    if (optimizer_active)
+    {
+        if (g_energy.optimizer_decision.charge_target == 0U ||
+            g_energy.optimizer_decision.charge_target ==
+                fsm_charge_target)
+        {
+            charge_target =
+                g_energy.optimizer_decision.charge_target;
+        }
+        else
+        {
+            charge_target = fsm_charge_target;
+        }
+        if (g_energy.optimizer_decision.force_save_mode)
+        {
+            low_energy_mode = 1U;
+        }
+        if (charge_target == 1U)
+        {
+            charge_target_voltage_v = input->home_battery_voltage_v;
+        }
+        else if (charge_target == 2U)
+        {
+            charge_target_voltage_v = input->car_battery_voltage_v;
+        }
+        else
+        {
+            charge_target_voltage_v = 0.0f;
+        }
+    }
+#endif
+#else
+    (void)current_output;
+    (void)optimizer_input;
+    (void)optimizer_energy;
+    (void)optimizer_active;
+#endif
 
     if (charge_target != g_energy.pv_probe_target)
     {
@@ -671,8 +941,6 @@ void EnergyService_Process(const EnergyServiceInput_t *input)
 
     if (charge_target != 0U &&
         pv_available && g_energy.pv_charge_probed == 0U &&
-        ai_policy.allow_new_charge_probe &&
-        (charge_target != 2U || ai_policy.allow_car_charge) &&
         (input->pv_voltage_v > g_energy.pv_probe_threshold) &&
         (now_tick - g_energy.pv_state_tick) >= PV_ACTIVE_STABILIZE_MS)
     {
@@ -706,7 +974,6 @@ void EnergyService_Process(const EnergyServiceInput_t *input)
 
     pv_can_charge_home =
         (charge_target == 1U) &&
-        ai_policy.allow_home_charge &&
         (pv_probe_charge ||
          (can_charge_from_pv &&
           pv_load_priority_ok &&
@@ -716,7 +983,6 @@ void EnergyService_Process(const EnergyServiceInput_t *input)
              PV_CHARGE_HOLD_MARGIN_V : PV_CHARGE_VOLT_MARGIN_V)))));
     pv_can_charge_car =
         (charge_target == 2U) &&
-        ai_policy.allow_car_charge &&
         (pv_probe_charge ||
          (can_charge_from_pv &&
           pv_load_priority_ok &&
@@ -727,11 +993,11 @@ void EnergyService_Process(const EnergyServiceInput_t *input)
     v2h_should_start =
         (!enough_for_pv_load &&
          input->home_soc <= HOME_SOC_V2H_START_PCT &&
-         input->car_soc >= CAR_SOC_V2H_START_PCT);
+         car_soc_control >= CAR_SOC_V2H_START_PCT);
     v2h_should_stop =
         (enough_for_pv_load ||
          input->home_soc >= HOME_SOC_V2H_STOP_PCT ||
-         input->car_soc <= CAR_SOC_V2H_STOP_PCT);
+         car_soc_control <= CAR_SOC_V2H_STOP_PCT);
 
     EnergyIo_ReadKeys(&keys);
 
@@ -826,28 +1092,28 @@ void EnergyService_Process(const EnergyServiceInput_t *input)
                          home_source_available &&
                          g_energy.rigid_user_req);
 
-    if (pv_can_charge_home &&
-        (g_energy.charge_state == CHARGE_FSM_HOME_PRIORITY ||
-         g_energy.charge_state == CHARGE_FSM_CAR_FULL_HOME_RECOVERY) &&
+    if (pv_can_charge_home && charge_target == 1U &&
         input->home_soc < HOME_SOC_CAR_CHARGE_START_PCT)
     {
-        EnergyIo_WriteOutput(ENERGY_OUTPUT_HOME_CHARGE, 1U);
-        EnergyIo_WriteOutput(ENERGY_OUTPUT_CAR_CHARGE, 0U);
-        g_energy.pv_charging_active = 1U;
+        requested_charge_target = 1U;
     }
-    else if (pv_can_charge_car && ai_policy.allow_car_charge &&
-             g_energy.charge_state == CHARGE_FSM_CAR_PRIORITY &&
-             input->car_soc < CAR_SOC_CHARGE_STOP_PCT)
+    else if (pv_can_charge_car && charge_target == 2U &&
+             car_soc_control < CAR_SOC_CHARGE_STOP_PCT)
     {
-        EnergyIo_WriteOutput(ENERGY_OUTPUT_HOME_CHARGE, 0U);
-        EnergyIo_WriteOutput(ENERGY_OUTPUT_CAR_CHARGE, 1U);
-        g_energy.pv_charging_active = 1U;
+        requested_charge_target = 2U;
     }
-    else
-    {
-        EnergyIo_DisableChargeOutputs();
-        g_energy.pv_charging_active = 0U;
-    }
+
+    Energy_ApplyChargeOutput(requested_charge_target,
+                             charge_target,
+                             fsm_charge_target,
+                             input,
+                             car_soc_control,
+                             pv_available,
+                             now_tick);
+    requested_charge_target = Energy_GetChargeOutputTarget();
+    g_energy.pv_charging_active =
+        requested_charge_target == 1U ||
+        requested_charge_target == 2U ? 1U : 0U;
 
     car_charge_on = EnergyIo_ReadOutput(ENERGY_OUTPUT_CAR_CHARGE);
     if (car_charge_on)
@@ -950,6 +1216,18 @@ void EnergyService_GetOutputState(EnergyOutputState_t *state)
     state->v2h = g_energy.v2h_active ? 1U : 0U;
 }
 
+uint8_t EnergyService_GetOptimizerDecision(
+    EnergyOptimizerDecision_t *decision)
+{
+    if (decision == NULL)
+    {
+        return 1U;
+    }
+
+    *decision = g_energy.optimizer_decision;
+    return decision->valid ? 0U : 1U;
+}
+
 uint8_t EnergyService_IsChargingActive(void)
 {
     return g_energy.charging_active ? 1U : 0U;
@@ -995,7 +1273,8 @@ void EnergyService_BuildLstmInput(EnergyLstmInput_t *output,
                      input->home_battery_voltage_v : 0.0f;
     output->home_soc = input->sensor_ok ? input->home_soc : 0.0f;
     output->load_p = input->home_load_power_w;
-    output->car_soc = input->car_soc;
+    output->car_soc = g_energy.car_soc_control_valid ?
+                      g_energy.car_soc_control : input->car_soc;
     output->human_soc = input->human_soc;
 
     EnergyService_GetOutputState(&state);
