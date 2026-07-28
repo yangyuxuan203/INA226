@@ -63,7 +63,7 @@ void EnergyLvgl_GetSnapshot(EnergyLvglSnapshot_t *snapshot)
     snapshot->car_v = vehicle.voltage;
     snapshot->car_i_ma = vehicle.current;
     snapshot->car_temp = vehicle.temperature;
-    snapshot->car_soc = vehicle.soc_pct;
+    snapshot->car_soc = (uint8_t)(vehicle.soc_pct + 0.5f);
     snapshot->car_status = (uint8_t)vehicle.status;
 
     snapshot->human_valid = state.wearable.valid;

@@ -43,7 +43,7 @@ typedef struct {
     float   current;
     float   temperature;
     BatteryStatus_t status;
-    uint8_t soc_pct;            /* SOC from STM32F1 via 0x104 */
+    float soc_pct;              /* SOC from STM32F1 via 0x104 */
 } CAN_BatteryData_t;
 
 /* CAN RX control command (to STM32F1) */

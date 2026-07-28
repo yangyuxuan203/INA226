@@ -2,11 +2,14 @@
 #define APP_CONFIG_H
 
 /* Feature switches. Health checks stay active when their serial log is off. */
-#define APP_LSTM_PREDICTION_ENABLE       0U
+#define APP_LSTM_PREDICTION_ENABLE       1U
+#define APP_LSTM_DISPATCH_ENABLE         0U
+#define APP_LSTM_PREDICTION_LOG_ENABLE   1U
 #define APP_HEALTH_SERIAL_LOG_ENABLE     0U
 #define APP_COMM_SERIAL_LOG_ENABLE       0U
 
 /* ESP32 state upload stays active even when prediction is disabled. */
+#define APP_LSTM_INPUT_SCHEMA_VERSION    1U
 #define APP_ESP32_STATE_TX_PERIOD_MS   2000U
 #define APP_ESP32_PEER_TIMEOUT_MS     15000U
 #define APP_ESP32_TX_FAILURE_LIMIT        3U

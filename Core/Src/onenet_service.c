@@ -37,7 +37,7 @@ static void OneNET_FillUploadData(OneNET_UploadData_t *upload,
         return;
     }
 
-    upload->car_soc = battery->soc_pct;
+    upload->car_soc = (uint8_t)(battery->soc_pct + 0.5f);
     upload->car_status = (uint8_t)battery->status;
     upload->home_feng = output->fan;
     upload->home_led = output->led;

@@ -22,6 +22,13 @@
 #define APP_TASK_HOME_AVERAGE_COUNT        8U
 #define APP_TASK_POWER_AVERAGE_COUNT       8U
 
+static volatile uint32_t g_data_elapsed_ms;
+
+uint32_t AppTasks_GetDataElapsedMs(void)
+{
+    return g_data_elapsed_ms;
+}
+
 static float AppTasks_Average(const float *values, uint8_t count)
 {
     float sum = 0.0f;
@@ -207,6 +214,7 @@ void EnergyControlTask(void const *argument)
         Error_Handler();
     }
 #if APP_DATA_LOG_ENABLE
+    g_data_elapsed_ms = 0U;
     data_log_tick = HAL_GetTick();
 #endif
 
@@ -294,7 +302,7 @@ void EnergyControlTask(void const *argument)
                 state.sensor.bus_voltage;
             service_input.car_battery_voltage_v = vehicle.voltage;
             service_input.home_soc = state.sensor.soc_pct;
-            service_input.car_soc = (float)vehicle.soc_pct;
+            service_input.car_soc = vehicle.soc_pct;
             service_input.human_soc = state.wearable.valid ?
                 state.wearable.bat_pct : -1.0f;
             service_input.lux = state.sensor.lux;
@@ -329,10 +337,11 @@ void EnergyControlTask(void const *argument)
                 EnergyLstmInput_t data_input;
 
                 data_log_tick += APP_DATA_LOG_PERIOD_MS;
+                g_data_elapsed_ms += APP_DATA_LOG_PERIOD_MS;
                 EnergyService_BuildLstmInput(&data_input, &service_input);
                 printf("DATA,%lu,%.6f,%.6f,%.1f,%.3f,%.3f,%.3f,%.1f,%.3f,"
                        "%.1f,%.1f,%u,%u,%u,%u,%u,%u,%u,%u,%u\r\n",
-                       (unsigned long)APP_DATA_LOG_PERIOD_MS,
+                       (unsigned long)g_data_elapsed_ms,
                        (double)data_input.real_hour_sin,
                        (double)data_input.real_hour_cos,
                        (double)data_input.lux,

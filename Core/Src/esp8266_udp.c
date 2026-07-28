@@ -12,6 +12,7 @@ static uint8_t g_cjson_hooks_ready = 0;
 static char g_esp32s3_ip[32] = {0};
 static uint16_t g_esp32s3_src_port = 0;
 static uint32_t g_esp32s3_last_rx_tick = 0U;
+static uint32_t g_lstm_sample_seq = 0U;
 
 static void *ESP8266_JSON_Malloc(size_t size)
 {
@@ -313,6 +314,7 @@ uint8_t ESP8266_UDP_SendLstmInput(const EnergyLstmInput_t *input)
     cJSON *root;
     char *json;
     const char *dst_ip;
+    uint32_t sample_seq;
     uint8_t ret;
 
     if (input == NULL)
@@ -328,7 +330,19 @@ uint8_t ESP8266_UDP_SendLstmInput(const EnergyLstmInput_t *input)
         return 1;
     }
 
+    sample_seq = ++g_lstm_sample_seq;
+    if (sample_seq == 0U)
+    {
+        sample_seq = ++g_lstm_sample_seq;
+    }
+
     cJSON_AddStringToObject(root, "type", "lstm_input");
+    cJSON_AddNumberToObject(root, "schema_version",
+                            APP_LSTM_INPUT_SCHEMA_VERSION);
+    cJSON_AddNumberToObject(root, "sample_seq", sample_seq);
+    cJSON_AddNumberToObject(root, "sample_uptime_ms", HAL_GetTick());
+    cJSON_AddNumberToObject(root, "sample_period_ms",
+                            APP_ESP32_STATE_TX_PERIOD_MS);
     cJSON_AddBoolToObject(root, "prediction_enable",
                           APP_LSTM_PREDICTION_ENABLE != 0U);
     cJSON_AddNumberToObject(root, "real_hour_sin", input->real_hour_sin);

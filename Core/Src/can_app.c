@@ -192,7 +192,15 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan_handle)
                 {
                     float f1_soc;
                     memcpy(&f1_soc, g_rx_data, sizeof(float));
-                    s_f1_battery.soc_pct = (uint8_t)(f1_soc + 0.5f);
+                    if (f1_soc < 0.0f)
+                    {
+                        f1_soc = 0.0f;
+                    }
+                    else if (f1_soc > 100.0f)
+                    {
+                        f1_soc = 100.0f;
+                    }
+                    s_f1_battery.soc_pct = f1_soc;
                     break;
                 }
 

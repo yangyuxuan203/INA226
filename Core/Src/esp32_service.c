@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "app_health.h"
 #include "app_state.h"
+#include "app_tasks.h"
 #include "can_app.h"
 #include "cmsis_os.h"
 #include "energy_service.h"
@@ -37,7 +38,7 @@ static uint8_t ESP32_ServiceBuildEnergyInput(EnergyServiceInput_t *input,
     input->home_battery_voltage_v = state->sensor.bus_voltage;
     input->car_battery_voltage_v = vehicle.voltage;
     input->home_soc = state->sensor.soc_pct;
-    input->car_soc = (float)vehicle.soc_pct;
+    input->car_soc = vehicle.soc_pct;
     input->human_soc = state->wearable.valid ?
         state->wearable.bat_pct : -1.0f;
     input->lux = state->sensor.lux;
@@ -142,6 +143,14 @@ void ESP32_ServiceTask(void const *argument)
                 }
                 (void)AppState_SetPrediction(&prediction,
                                              raw_prediction_home_soc);
+#if APP_LSTM_PREDICTION_LOG_ENABLE
+                printf("PRED,%lu,%.3f,%.3f,%.1f,%.1f\r\n",
+                       (unsigned long)AppTasks_GetDataElapsedMs(),
+                       (double)prediction.future_pv_p,
+                       (double)prediction.future_load_p,
+                       (double)prediction.future_home_soc,
+                       (double)raw_prediction_home_soc);
+#endif
             }
 #endif
 
